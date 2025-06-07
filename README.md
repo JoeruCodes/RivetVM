@@ -1,2 +1,32 @@
 # RivetVM
-# RivetVM
+**CAUTION**: This is still under development.
+
+## Instruction Op Codes yet to be implemented
+    AddrSpaceCast,
+    AtomicCmpXchg,
+    AtomicRMW,
+    BitCast,
+    Call,
+    CallBr,
+    CatchPad,
+    CatchRet,
+    CatchSwitch,
+    CleanupPad,
+    CleanupRet,
+    ExtractElement,
+    ExtractValue,
+    Fence,
+    Freeze,
+    IndirectBr,
+    InsertElement,
+    InsertValue,
+    IntToPtr,
+    Invoke,
+    LandingPad,
+    PtrToInt,
+    Resume,
+    ShuffleVector,
+    Unreachable,
+    UserOp1,
+    UserOp2,
+    VAArg,
