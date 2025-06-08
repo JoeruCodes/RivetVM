@@ -1,7 +1,7 @@
-use crate::llvm::air::codegen::ctx::AirGenContext;
-use crate::llvm::air::types::AirExpression as AirConstraint;
-use crate::llvm::air::types::AirTraceVariable;
-use crate::llvm::air::utils::lang_operand_to_air_expression;
+use lang::constraints::{
+    AirExpression as AirConstraint, AirTraceVariable, RowOffset, lang_operand_to_air_expression,
+};
+use lang::ctx::AirGenContext;
 use lang::{MemoryAccessLogEntry, MemoryAccessType};
 
 const CLK_DIFFERENCE_BITWIDTH: u32 = 32;
@@ -52,18 +52,10 @@ pub fn generate_memory_air_constraints(
 
     for i in 0..memory_log.len() {
         let entry = &memory_log[i];
-        let m_clk_c =
-            AirConstraint::Trace(memory_cols.clk, crate::llvm::air::types::RowOffset::Current);
-        let m_addr_c = AirConstraint::Trace(
-            memory_cols.addr,
-            crate::llvm::air::types::RowOffset::Current,
-        );
-        let m_val_c =
-            AirConstraint::Trace(memory_cols.val, crate::llvm::air::types::RowOffset::Current);
-        let m_is_write_c = AirConstraint::Trace(
-            memory_cols.is_write,
-            crate::llvm::air::types::RowOffset::Current,
-        );
+        let m_clk_c = AirConstraint::Trace(memory_cols.clk, RowOffset::Current);
+        let m_addr_c = AirConstraint::Trace(memory_cols.addr, RowOffset::Current);
+        let m_val_c = AirConstraint::Trace(memory_cols.val, RowOffset::Current);
+        let m_is_write_c = AirConstraint::Trace(memory_cols.is_write, RowOffset::Current);
 
         constraints.push(AirConstraint::Sub(
             Box::new(m_clk_c.clone()),
@@ -104,38 +96,23 @@ pub fn generate_memory_air_constraints(
     }
 
     for i in 0..(memory_log.len().saturating_sub(1)) {
-        let m_clk_c =
-            AirConstraint::Trace(memory_cols.clk, crate::llvm::air::types::RowOffset::Current);
-        let m_addr_c = AirConstraint::Trace(
-            memory_cols.addr,
-            crate::llvm::air::types::RowOffset::Current,
-        );
-        let m_val_c =
-            AirConstraint::Trace(memory_cols.val, crate::llvm::air::types::RowOffset::Current);
+        let m_clk_c = AirConstraint::Trace(memory_cols.clk, RowOffset::Current);
+        let m_addr_c = AirConstraint::Trace(memory_cols.addr, RowOffset::Current);
+        let m_val_c = AirConstraint::Trace(memory_cols.val, RowOffset::Current);
 
-        let m_clk_n =
-            AirConstraint::Trace(memory_cols.clk, crate::llvm::air::types::RowOffset::Next);
-        let m_addr_n =
-            AirConstraint::Trace(memory_cols.addr, crate::llvm::air::types::RowOffset::Next);
-        let m_val_n =
-            AirConstraint::Trace(memory_cols.val, crate::llvm::air::types::RowOffset::Next);
-        let m_is_write_n = AirConstraint::Trace(
-            memory_cols.is_write,
-            crate::llvm::air::types::RowOffset::Next,
-        );
+        let m_clk_n = AirConstraint::Trace(memory_cols.clk, RowOffset::Next);
+        let m_addr_n = AirConstraint::Trace(memory_cols.addr, RowOffset::Next);
+        let m_val_n = AirConstraint::Trace(memory_cols.val, RowOffset::Next);
+        let m_is_write_n = AirConstraint::Trace(memory_cols.is_write, RowOffset::Next);
 
         let next_entry_val_expr = lang_operand_to_air_expression(memory_log[i + 1].value);
 
         let addr_diff = AirConstraint::Sub(Box::new(m_addr_n.clone()), Box::new(m_addr_c.clone()));
 
-        let is_addr_same_aux = AirConstraint::Trace(
-            air_gen_ctx.new_aux_variable(),
-            crate::llvm::air::types::RowOffset::Current,
-        );
-        let inv_addr_diff_aux = AirConstraint::Trace(
-            air_gen_ctx.new_aux_variable(),
-            crate::llvm::air::types::RowOffset::Current,
-        );
+        let is_addr_same_aux =
+            AirConstraint::Trace(air_gen_ctx.new_aux_variable(), RowOffset::Current);
+        let inv_addr_diff_aux =
+            AirConstraint::Trace(air_gen_ctx.new_aux_variable(), RowOffset::Current);
 
         constraints.push(AirConstraint::Mul(
             Box::new(is_addr_same_aux.clone()),
@@ -168,10 +145,8 @@ pub fn generate_memory_air_constraints(
             )),
             Box::new(AirConstraint::Constant(1)),
         );
-        let clk_diff_non_negative_aux = AirConstraint::Trace(
-            air_gen_ctx.new_aux_variable(),
-            crate::llvm::air::types::RowOffset::Current,
-        );
+        let clk_diff_non_negative_aux =
+            AirConstraint::Trace(air_gen_ctx.new_aux_variable(), RowOffset::Current);
         constraints.push(AirConstraint::Mul(
             Box::new(is_addr_same_aux.clone()),
             Box::new(AirConstraint::Sub(

@@ -1,7 +1,8 @@
-use crate::{
-    constraints::{AirExpression, AirTraceVariable, RowOffset},
-    Operand,
-};
+use crate::constraints::{AirExpression, AirTraceVariable, RowOffset};
+
+use crate::constraints::lang_operand_to_air_expression;
+use crate::ctx::AirGenContext;
+use crate::Operand;
 
 fn new_boolean_aux(
     ctx: &mut AirGenContext,
@@ -10,6 +11,7 @@ fn new_boolean_aux(
 ) -> AirExpression {
     let aux_var = ctx.new_aux_variable();
     let aux_expr = AirExpression::Trace(aux_var, RowOffset::Current);
+
     constraints.push(AirExpression::Mul(
         Box::new(aux_expr.clone()),
         Box::new(AirExpression::Sub(
@@ -38,6 +40,7 @@ fn fp_decompose_unsigned(
     for i in 0..num_bits {
         let bit_aux_var = ctx.new_aux_variable();
         let bit_expr = AirExpression::Trace(bit_aux_var, RowOffset::Current);
+
         constraints.push(AirExpression::Mul(
             Box::new(bit_expr.clone()),
             Box::new(AirExpression::Sub(
@@ -61,6 +64,7 @@ fn fp_decompose_unsigned(
         Box::new(val_expr.clone()),
         Box::new(sum_terms),
     ));
+
     bit_exprs
 }
 
@@ -404,6 +408,7 @@ pub fn fp_add(
     let res_aux_var = ctx.new_aux_variable();
     let res_expr = AirExpression::Trace(res_aux_var, RowOffset::Current);
     println!("      fp_add: {}_res_var: {:?}", hint_prefix, res_aux_var);
+
     constraints.push(AirExpression::Sub(
         Box::new(res_expr.clone()),
         Box::new(AirExpression::Add(Box::new(a.clone()), Box::new(b.clone()))),
@@ -421,6 +426,7 @@ pub fn fp_sub(
     let res_aux_var = ctx.new_aux_variable();
     let res_expr = AirExpression::Trace(res_aux_var, RowOffset::Current);
     println!("      fp_sub: {}_res_var: {:?}", hint_prefix, res_aux_var);
+
     constraints.push(AirExpression::Sub(
         Box::new(res_expr.clone()),
         Box::new(AirExpression::Sub(Box::new(a.clone()), Box::new(b.clone()))),
@@ -438,6 +444,7 @@ pub fn fp_mul(
     let res_aux_var = ctx.new_aux_variable();
     let res_expr = AirExpression::Trace(res_aux_var, RowOffset::Current);
     println!("      fp_mul: {}_res_var: {:?}", hint_prefix, res_aux_var);
+
     constraints.push(AirExpression::Sub(
         Box::new(res_expr.clone()),
         Box::new(AirExpression::Mul(Box::new(a.clone()), Box::new(b.clone()))),
@@ -486,6 +493,7 @@ pub fn fp_icmp_ult(
         "      fp_icmp_ult: {}_res_ult_var: {:?}",
         hint_prefix, res_ult_var
     );
+
     constraints.push(AirExpression::Mul(
         Box::new(res_ult_expr.clone()),
         Box::new(AirExpression::Sub(
@@ -778,7 +786,7 @@ pub fn fp_normalize_and_round_significand(
     AirExpression,
     AirExpression,
     AirExpression,
-    AirExpression,
+    AirExpression, /*is_true_zero_after_norm_round*/
 ) {
     let int_sig_is_zero = fp_is_value_zero(
         intermediate_sig,
@@ -800,12 +808,10 @@ pub fn fp_normalize_and_round_significand(
     let sig_overflowed_one_bit = if sig_overflow_bit_pos < norm_sig_width {
         intermediate_sig_bits[sig_overflow_bit_pos as usize].clone()
     } else {
-        AirExpression::Constant(0) 
+        AirExpression::Constant(0)
     };
-    
 
-    
-    let sig_after_norm_rs = ctx.new_aux_variable(); 
+    let sig_after_norm_rs = ctx.new_aux_variable();
     let sig_after_norm_rs_expr = AirExpression::Trace(sig_after_norm_rs, RowOffset::Current);
     let exp_after_norm_rs = ctx.new_aux_variable();
     let exp_after_norm_rs_expr = AirExpression::Trace(exp_after_norm_rs, RowOffset::Current);
@@ -826,27 +832,18 @@ pub fn fp_normalize_and_round_significand(
         &format!("{}_s_after_norm_rs", hint_prefix),
     );
 
-    
-    
-    
-    
-    
-    
     let mut shifted_sig_bits_if_overflow = Vec::new();
     if norm_sig_width > 0 {
-        
         for i in 1..norm_sig_width {
-            
             shifted_sig_bits_if_overflow.push(intermediate_sig_bits[i as usize].clone());
         }
     }
-    
+
     while shifted_sig_bits_if_overflow.len() < (mant_bit_count + 1) as usize {
-        shifted_sig_bits_if_overflow.insert(0, AirExpression::Constant(0)); 
-        
+        shifted_sig_bits_if_overflow.insert(0, AirExpression::Constant(0));
     }
     if shifted_sig_bits_if_overflow.len() > (mant_bit_count + 1) as usize {
-        shifted_sig_bits_if_overflow.truncate((mant_bit_count + 1) as usize); 
+        shifted_sig_bits_if_overflow.truncate((mant_bit_count + 1) as usize);
     }
     let sig_if_overflow_val = fp_reconstruct_from_bits(
         &shifted_sig_bits_if_overflow,
@@ -874,19 +871,14 @@ pub fn fp_normalize_and_round_significand(
         constraints,
         &format!("{}_s_inter_if_ovf", hint_prefix),
     );
-    let s_if_overflow_val = s_if_overflow_val_inter; 
+    let s_if_overflow_val = s_if_overflow_val_inter;
 
-    
-    
-    
-    
     let mut sig_bits_if_not_overflow = Vec::new();
     for i in 0..=(mant_bit_count) {
-        
         if i < norm_sig_width {
             sig_bits_if_not_overflow.push(intermediate_sig_bits[i as usize].clone());
         } else {
-            sig_bits_if_not_overflow.push(AirExpression::Constant(0)); 
+            sig_bits_if_not_overflow.push(AirExpression::Constant(0));
         }
     }
     let sig_if_not_overflow_val = fp_reconstruct_from_bits(
@@ -900,7 +892,6 @@ pub fn fp_normalize_and_round_significand(
     let r_if_not_overflow_val = round_bit_from_align.clone();
     let s_if_not_overflow_val = sticky_bit_from_align.clone();
 
-    
     let selected_sig_norm = fp_select(
         &sig_overflowed_one_bit,
         &sig_if_overflow_val,
@@ -965,11 +956,7 @@ pub fn fp_normalize_and_round_significand(
         Box::new(s_after_norm_rs.clone()),
         Box::new(selected_s_norm),
     ));
-    
 
-    
-    
-    
     let sig_for_round_bits = fp_decompose_unsigned(
         &sig_after_norm_rs_expr,
         mant_bit_count + 1,
@@ -983,7 +970,6 @@ pub fn fp_normalize_and_round_significand(
         AirExpression::Constant(0)
     };
 
-    
     let r_or_s = fp_logical_or(
         &r_after_norm_rs,
         &s_after_norm_rs,
@@ -1005,7 +991,6 @@ pub fn fp_normalize_and_round_significand(
         constraints,
         &format!("{}_should_inc_sig", hint_prefix),
     );
-    
 
     let sig_after_round_val = fp_add(
         &sig_after_norm_rs_expr,
@@ -1014,10 +999,8 @@ pub fn fp_normalize_and_round_significand(
         constraints,
         &format!("{}_sig_plus_inc", hint_prefix),
     );
-    let exp_after_round_val = exp_after_norm_rs_expr.clone(); 
+    let exp_after_round_val = exp_after_norm_rs_expr.clone();
 
-    
-    
     let sig_after_round_bits = fp_decompose_unsigned(
         &sig_after_round_val,
         mant_bit_count + 2,
@@ -1031,17 +1014,15 @@ pub fn fp_normalize_and_round_significand(
     } else {
         AirExpression::Constant(0)
     };
-    
 
-    
-    let final_mant_if_round_ovf = AirExpression::Constant(1u128 << mant_bit_count); 
+    let final_mant_if_round_ovf = AirExpression::Constant(1u128 << mant_bit_count);
     let mut final_mant_bits_if_not_round_ovf = Vec::new();
     for i in 0..=mant_bit_count {
         if i < (mant_bit_count + 2) {
             final_mant_bits_if_not_round_ovf.push(sig_after_round_bits[i as usize].clone());
         } else {
             final_mant_bits_if_not_round_ovf.push(AirExpression::Constant(0));
-        } 
+        }
     }
     let final_mant_if_not_round_ovf_val = fp_reconstruct_from_bits(
         &final_mant_bits_if_not_round_ovf,
@@ -1059,7 +1040,6 @@ pub fn fp_normalize_and_round_significand(
         &format!("{}_final_mant_sel", hint_prefix),
     );
 
-    
     let final_biased_exponent_pre_zero_check = fp_add(
         &exp_after_round_val,
         &round_caused_sig_overflow,
@@ -1068,7 +1048,6 @@ pub fn fp_normalize_and_round_significand(
         &format!("{}_exp_plus_round_ovf", hint_prefix),
     );
 
-    
     let final_sign_output = fp_select(
         &int_sig_is_zero,
         &intermediate_sign,
@@ -1076,7 +1055,7 @@ pub fn fp_normalize_and_round_significand(
         ctx,
         constraints,
         &format!("{}_final_sign_zero_sel", hint_prefix),
-    ); 
+    );
     let final_exponent_output = fp_select(
         &int_sig_is_zero,
         &AirExpression::Constant(0),
@@ -1094,7 +1073,6 @@ pub fn fp_normalize_and_round_significand(
         &format!("{}_final_mant_zero_sel", hint_prefix),
     );
 
-    
     let final_mantissa_output_bits = fp_decompose_unsigned(
         &final_mantissa_output_from_sig,
         mant_bit_count + 1,
@@ -1113,11 +1091,6 @@ pub fn fp_normalize_and_round_significand(
         constraints,
         &format!("{}_final_actual_mant_rec", hint_prefix),
     );
-
-    
-    
-    
-    
 
     (
         final_sign_output,
@@ -1224,7 +1197,6 @@ pub fn setup_sem_aux_vars(
     (sign_var, exponent_val_col, mantissa_val_col)
 }
 
-
 pub fn fp_power_of_2(
     val_expr: &AirExpression,
     val_bit_width: u32,
@@ -1242,14 +1214,11 @@ pub fn fp_power_of_2(
 
     let mut cumulative_product = AirExpression::Constant(1);
 
-    
     let mut c_i = AirExpression::Constant(2);
 
     for i in 0..val_bit_width {
         let bit_i_expr = &val_bits[i as usize];
 
-        
-        
         let c_i_minus_1 = fp_sub(
             &c_i,
             &AirExpression::Constant(1),
@@ -1279,7 +1248,6 @@ pub fn fp_power_of_2(
             &format!("{}_prod_step_{}", hint_prefix, i),
         );
 
-        
         if i < val_bit_width - 1 {
             c_i = fp_mul(
                 &c_i,
@@ -1304,8 +1272,6 @@ pub fn fp_variable_division(
     constraints: &mut Vec<AirExpression>,
     hint_prefix: &str,
 ) -> (AirExpression, AirExpression) {
-    
-    
     let quotient_aux = ctx.new_aux_variable();
     let quotient_expr = AirExpression::Trace(quotient_aux, RowOffset::Current);
     ctx.add_unsigned_range_proof_constraints(quotient_expr.clone(), dividend_bit_width);
@@ -1322,7 +1288,6 @@ pub fn fp_variable_division(
         &format!("{}_divisor_pow2", hint_prefix),
     );
 
-    
     let quot_times_div = fp_mul(
         &quotient_expr,
         &divisor_expr,
@@ -1342,17 +1307,15 @@ pub fn fp_variable_division(
         Box::new(qd_plus_r),
     ));
 
-    
     let rem_lt_divisor = fp_icmp_ult(
         &remainder_expr,
         &divisor_expr,
-        dividend_bit_width + 1, 
+        dividend_bit_width + 1,
         ctx,
         constraints,
         &format!("{}_rem_lt_div", hint_prefix),
     );
 
-    
     constraints.push(AirExpression::Sub(
         Box::new(rem_lt_divisor),
         Box::new(AirExpression::Constant(1)),
@@ -1360,10 +1323,6 @@ pub fn fp_variable_division(
 
     (quotient_expr, remainder_expr)
 }
-
-
-
-
 
 pub fn fp_find_msb(
     value_expr: &AirExpression,
@@ -1373,12 +1332,9 @@ pub fn fp_find_msb(
     hint_prefix: &str,
 ) -> (AirExpression, AirExpression) {
     if bitwidth == 0 {
-        
-        
         return (AirExpression::Constant(0), AirExpression::Constant(0));
     }
 
-    
     let value_bits = fp_decompose_unsigned(
         value_expr,
         bitwidth,
@@ -1387,11 +1343,9 @@ pub fn fp_find_msb(
         &format!("{}_val_decomp", hint_prefix),
     );
 
-    
     let mut h_bits = vec![AirExpression::Constant(0); bitwidth as usize];
     if bitwidth > 1 {
         for i in (0..(bitwidth - 1)).rev() {
-            
             let i_usize = i as usize;
             h_bits[i_usize] = fp_logical_or(
                 &h_bits[i_usize + 1],
@@ -1403,8 +1357,6 @@ pub fn fp_find_msb(
         }
     }
 
-    
-    
     let mut p_bits = Vec::new();
     for i in 0..bitwidth {
         let i_usize = i as usize;
@@ -1424,8 +1376,6 @@ pub fn fp_find_msb(
         p_bits.push(p_i);
     }
 
-    
-    
     let mut sum_of_p_bits = AirExpression::Constant(0);
     if bitwidth > 0 {
         sum_of_p_bits = p_bits[0].clone();
@@ -1446,9 +1396,8 @@ pub fn fp_find_msb(
         Box::new(AirExpression::Constant(1)),
     ));
 
-    
     let mut msb_pos_expr = AirExpression::Constant(0);
-    
+
     if bitwidth > 1 {
         for i in 1..bitwidth as usize {
             let weight = AirExpression::Constant(i as u128);
@@ -1469,8 +1418,6 @@ pub fn fp_find_msb(
         }
     }
 
-    
-    
     let msb_value_expr = fp_reconstruct_from_bits(
         &p_bits,
         ctx,

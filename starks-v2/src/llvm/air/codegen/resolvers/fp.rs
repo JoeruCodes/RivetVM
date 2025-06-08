@@ -1,8 +1,7 @@
-use crate::llvm::air::{
-    codegen::ctx::AirGenContext,
-    types::{AirExpression, AirTraceVariable, RowOffset},
-    utils::lang_operand_to_air_expression,
-};
+use lang::constraints::{AirExpression, AirTraceVariable, RowOffset};
+use lang::ctx::AirGenContext;
+
+use lang::constraints::lang_operand_to_air_expression;
 
 fn new_boolean_aux(
     ctx: &mut AirGenContext,

@@ -6,7 +6,44 @@ use inkwell::values::{
 };
 pub use inkwell::FloatPredicate;
 pub use inkwell::IntPredicate;
+pub mod constraints;
+pub mod ctx;
+pub mod utils;
 use std::collections::HashMap;
+
+use crate::constraints::add::Add;
+use crate::constraints::and::And;
+use crate::constraints::ashr::Ashr;
+use crate::constraints::fadd::FAdd;
+use crate::constraints::fcmp::FCmp;
+use crate::constraints::fdiv::FDiv;
+use crate::constraints::fmul::FMul;
+use crate::constraints::fneg::FNeg;
+use crate::constraints::fpext::FpExt;
+use crate::constraints::fptosi::{self, FpToSi};
+use crate::constraints::fptoui::FpToUi;
+use crate::constraints::fptrunc::FpTrunc;
+use crate::constraints::frem::FRem;
+use crate::constraints::fsub::FSub;
+use crate::constraints::get_elem_ptr::GetElementPtr;
+use crate::constraints::icmp::Icmp;
+use crate::constraints::mul::Mul;
+use crate::constraints::or::Or;
+use crate::constraints::phi::Phi;
+use crate::constraints::sdiv::SDiv;
+use crate::constraints::select::Select;
+use crate::constraints::sext::SExt;
+use crate::constraints::shl::Shl;
+use crate::constraints::shr::Shr;
+use crate::constraints::sitofp::SiToFp;
+use crate::constraints::srem::SRem;
+use crate::constraints::sub::Sub;
+use crate::constraints::trunc::Trunc;
+use crate::constraints::udiv::UDiv;
+use crate::constraints::uitofp::UiToFp;
+use crate::constraints::urem::URem;
+use crate::constraints::xor::Xor;
+use crate::constraints::zext::ZExt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConstraintSystemVariable(pub usize);
@@ -67,148 +104,27 @@ impl PartialOrd for MemoryAccessLogEntry {
 
 #[derive(Debug, Clone)]
 pub enum StructuredAirConstraint {
-    FMul {
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        block_name: String,
-    },
-    FDiv {
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        block_name: String,
-    },
-    FNeg {
-        operand: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        block_name: String,
-    },
-    Add {
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        block_name: String,
-    },
-    FAdd {
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        block_name: String,
-    },
-    FCmp {
-        cond: FloatPredicate,
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        block_name: String,
-    },
-    FRem {
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        block_name: String,
-    },
-    FSub {
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        block_name: String,
-    },
-    Sub {
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        block_name: String,
-    },
-    Multiply {
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        block_name: String,
-    },
-    SDiv {
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        block_name: String,
-    },
-    UDiv {
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        block_name: String,
-    },
-    Shl {
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        block_name: String,
-    },
-    Shr {
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        block_name: String,
-    },
-    AShr {
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        block_name: String,
-    },
-    And {
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        block_name: String,
-    },
-    Or {
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        block_name: String,
-    },
-    Xor {
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        block_name: String,
-    },
-    SRem {
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        block_name: String,
-    },
-    URem {
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        block_name: String,
-    },
-    Icmp {
-        cond: IntPredicate,
-        operand1: Operand,
-        operand2: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        block_name: String,
-    },
+    FMul(FMul),
+    FDiv(FDiv),
+    FNeg(FNeg),
+    Add(Add),
+    FAdd(FAdd),
+    FCmp(FCmp),
+    FRem(FRem),
+    FSub(FSub),
+    Sub(Sub),
+    Multiply(Mul),
+    SDiv(SDiv),
+    UDiv(UDiv),
+    Shl(Shl),
+    Shr(Shr),
+    AShr(Ashr),
+    And(And),
+    Or(Or),
+    Xor(Xor),
+    SRem(SRem),
+    URem(URem),
+    Icmp(Icmp),
     Branch {
         target_block_name: String,
         block_name: String,
@@ -219,11 +135,7 @@ pub enum StructuredAirConstraint {
         false_block_name: String,
         block_name: String,
     },
-    Phi {
-        result: ConstraintSystemVariable,
-        incoming_values: Vec<(Operand, String)>,
-        block_name: String,
-    },
+    Phi(Phi),
     Return {
         value: Option<Operand>,
         block_name: String,
@@ -239,83 +151,17 @@ pub enum StructuredAirConstraint {
         cases: Vec<(Operand, String)>,
         block_name: String,
     },
-    Trunc {
-        operand: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        result_bitwidth: u32,
-        block_name: String,
-    },
-    FPTrunc {
-        operand: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        result_bitwidth: u32,
-        block_name: String,
-    },
-    ZExt {
-        operand: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        result_bitwidth: u32,
-        block_name: String,
-    },
-    SExt {
-        operand: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        result_bitwidth: u32,
-        block_name: String,
-    },
-    FPExt {
-        operand: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        result_bitwidth: u32,
-        block_name: String,
-    },
-    UIToFP {
-        operand: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        result_bitwidth: u32,
-        block_name: String,
-    },
-    FPToUI {
-        operand: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        result_bitwidth: u32,
-        block_name: String,
-    },
-    SIToFP {
-        operand: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        result_bitwidth: u32,
-        block_name: String,
-    },
-    FPToSI {
-        operand: Operand,
-        result: ConstraintSystemVariable,
-        operand_bitwidth: u32,
-        result_bitwidth: u32,
-        block_name: String,
-    },
-    Select {
-        cond: Operand,
-        true_val: Operand,
-        false_val: Operand,
-        result: ConstraintSystemVariable,
-        block_name: String,
-    },
-    GetElementPtr {
-        base: Operand,
-        index: Operand,
-        element_size_bytes: u64,
-        result: ConstraintSystemVariable,
-        block_name: String,
-    },
+    Trunc(Trunc),
+    FPTrunc(FpTrunc),
+    ZExt(ZExt),
+    SExt(SExt),
+    FPExt(FpExt),
+    UIToFP(UiToFp),
+    FPToUI(FpToUi),
+    SIToFP(SiToFp),
+    FPToSI(fptosi::FpToSi),
+    Select(Select),
+    GetElementPtr(GetElementPtr),
 }
 
 pub struct ArithmetizationContext<'ctx> {
@@ -480,12 +326,12 @@ pub fn process_llvm_ir(
                                 .llvm_basic_value_to_air_operand(rhs_llvm);
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
-                            let sc = StructuredAirConstraint::Add {
+                            let sc = StructuredAirConstraint::Add(Add {
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -538,13 +384,13 @@ pub fn process_llvm_ir(
                                 },
                                 _ => panic!("FPExt result has unexpected LLVM type: {:?}. Expected FloatType.", instr.get_type()),
                             };
-                            let sc = StructuredAirConstraint::FPExt {
+                            let sc = StructuredAirConstraint::FPExt(FpExt {
                                 operand: operand_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 result_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -585,13 +431,13 @@ pub fn process_llvm_ir(
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
 
-                            let sc = StructuredAirConstraint::FAdd {
+                            let sc = StructuredAirConstraint::FAdd(FAdd {
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -632,13 +478,13 @@ pub fn process_llvm_ir(
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
 
-                            let sc = StructuredAirConstraint::FSub {
+                            let sc = StructuredAirConstraint::FSub(FSub {
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -679,13 +525,13 @@ pub fn process_llvm_ir(
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
 
-                            let sc = StructuredAirConstraint::FMul {
+                            let sc = StructuredAirConstraint::FMul(FMul {
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -705,13 +551,13 @@ pub fn process_llvm_ir(
                                 _ => panic!("Trunc result has unexpected LLVM type: {:?}. Expected IntType.", instr.get_type()),
                             };
 
-                            let sc = StructuredAirConstraint::Trunc {
+                            let sc = StructuredAirConstraint::Trunc(Trunc {
                                 operand: operand_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 result_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -765,13 +611,13 @@ pub fn process_llvm_ir(
                                 _ => panic!("Trunc result has unexpected LLVM type: {:?}. Expected IntType.", instr.get_type()),
                             };
 
-                            let sc = StructuredAirConstraint::FPTrunc {
+                            let sc = StructuredAirConstraint::FPTrunc(FpTrunc {
                                 operand: operand_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 result_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -812,13 +658,13 @@ pub fn process_llvm_ir(
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
 
-                            let sc = StructuredAirConstraint::FDiv {
+                            let sc = StructuredAirConstraint::FDiv(FDiv {
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -859,13 +705,13 @@ pub fn process_llvm_ir(
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
 
-                            let sc = StructuredAirConstraint::FRem {
+                            let sc = StructuredAirConstraint::FRem(FRem {
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -879,12 +725,12 @@ pub fn process_llvm_ir(
                                 .llvm_basic_value_to_air_operand(rhs_llvm);
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
-                            let sc = StructuredAirConstraint::Multiply {
+                            let sc = StructuredAirConstraint::Multiply(Mul {
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -920,12 +766,12 @@ pub fn process_llvm_ir(
                                 );
                             };
 
-                            let sc = StructuredAirConstraint::FNeg {
+                            let sc = StructuredAirConstraint::FNeg(FNeg {
                                 operand: operand_air_op,
                                 result: result_cs_var,
                                 block_name: current_block_name,
                                 operand_bitwidth,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -966,14 +812,14 @@ pub fn process_llvm_ir(
                                 .llvm_basic_value_to_air_operand(rhs_llvm);
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
-                            let sc = StructuredAirConstraint::FCmp {
+                            let sc = StructuredAirConstraint::FCmp(FCmp {
                                 cond: predicate,
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -991,13 +837,13 @@ pub fn process_llvm_ir(
                                 .llvm_basic_value_to_air_operand(rhs_llvm);
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
-                            let sc = StructuredAirConstraint::SDiv {
+                            let sc = StructuredAirConstraint::SDiv(SDiv {
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -1015,13 +861,13 @@ pub fn process_llvm_ir(
                                 .llvm_basic_value_to_air_operand(rhs_llvm);
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
-                            let sc = StructuredAirConstraint::UDiv {
+                            let sc = StructuredAirConstraint::UDiv(UDiv {
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -1042,13 +888,13 @@ pub fn process_llvm_ir(
                                 .llvm_basic_value_to_air_operand(rhs_llvm);
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
-                            let sc = StructuredAirConstraint::Shl {
+                            let sc = StructuredAirConstraint::Shl(Shl {
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -1066,13 +912,13 @@ pub fn process_llvm_ir(
                                 .llvm_basic_value_to_air_operand(rhs_llvm);
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
-                            let sc = StructuredAirConstraint::Shr {
+                            let sc = StructuredAirConstraint::Shr(Shr {
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -1090,13 +936,13 @@ pub fn process_llvm_ir(
                                 .llvm_basic_value_to_air_operand(rhs_llvm);
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
-                            let sc = StructuredAirConstraint::AShr {
+                            let sc = StructuredAirConstraint::AShr(Ashr {
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -1120,14 +966,14 @@ pub fn process_llvm_ir(
                                 .llvm_basic_value_to_air_operand(rhs_llvm);
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
-                            let sc = StructuredAirConstraint::Icmp {
+                            let sc = StructuredAirConstraint::Icmp(Icmp {
                                 cond: predicate,
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -1196,11 +1042,11 @@ pub fn process_llvm_ir(
                                 incoming_values_air.push((air_operand, pred_bb_name));
                             }
                         }
-                        let sc = StructuredAirConstraint::Phi {
+                        let sc = StructuredAirConstraint::Phi(Phi {
                             result: result_cs_var,
                             incoming_values: incoming_values_air,
                             block_name: current_block_name,
-                        };
+                        });
                         module_arithmetization_ctx.add_structured_constraint(sc);
                     }
                     InstructionOpcode::Return => {
@@ -1360,12 +1206,12 @@ pub fn process_llvm_ir(
                                 .llvm_basic_value_to_air_operand(rhs_llvm);
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
-                            let sc = StructuredAirConstraint::Sub {
+                            let sc = StructuredAirConstraint::Sub(Sub {
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -1379,12 +1225,35 @@ pub fn process_llvm_ir(
                                 .llvm_basic_value_to_air_operand(rhs_llvm);
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
-                            let sc = StructuredAirConstraint::And {
+                            let sc = StructuredAirConstraint::And (And{
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 block_name: current_block_name,
-                            };
+                                is_fp: lhs_llvm.is_float_value(),
+                                operand_bitwidth: match lhs_llvm.get_type() {
+                                    BasicTypeEnum::IntType(it) => it.get_bit_width(),
+                                    BasicTypeEnum::FloatType(ft) => {
+                                        let local_context = ft.get_context();
+                                        if ft == local_context.f16_type() {
+                                            16
+                                        } else if ft == local_context.f32_type() {
+                                            32
+                                        } else if ft == local_context.f64_type() {
+                                            64
+                                        } else if ft == local_context.f128_type() {
+                                            128
+                                        } else if ft == local_context.x86_f80_type() {
+                                            80
+                                        } else if ft == local_context.ppc_f128_type() {
+                                            128
+                                        } else {
+                                            panic!("Unsupported or unrecognized float type for And: {:?}", ft);
+                                        }
+                                    },
+                                    _ => panic!("And operand has unexpected LLVM type: {:?}. Expected IntType or FloatType.", lhs_llvm.get_type()),
+                                },
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -1398,12 +1267,35 @@ pub fn process_llvm_ir(
                                 .llvm_basic_value_to_air_operand(rhs_llvm);
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
-                            let sc = StructuredAirConstraint::Or {
+                            let sc = StructuredAirConstraint::Or (Or{
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 block_name: current_block_name,
-                            };
+                                is_fp: lhs_llvm.is_float_value(),
+                                operand_bitwidth:match lhs_llvm.get_type() {
+                                    BasicTypeEnum::IntType(it) => it.get_bit_width(),
+                                    BasicTypeEnum::FloatType(ft) => {
+                                        let local_context = ft.get_context();
+                                        if ft == local_context.f16_type() {
+                                            16
+                                        } else if ft == local_context.f32_type() {
+                                            32
+                                        } else if ft == local_context.f64_type() {
+                                            64
+                                        } else if ft == local_context.f128_type() {
+                                            128
+                                        } else if ft == local_context.x86_f80_type() {
+                                            80
+                                        } else if ft == local_context.ppc_f128_type() {
+                                            128
+                                        } else {
+                                            panic!("Unsupported or unrecognized float type for And: {:?}", ft);
+                                        }
+                                    },
+                                    _ => panic!("And operand has unexpected LLVM type: {:?}. Expected IntType or FloatType.", lhs_llvm.get_type()),
+                                }
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -1417,12 +1309,35 @@ pub fn process_llvm_ir(
                                 .llvm_basic_value_to_air_operand(rhs_llvm);
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
-                            let sc = StructuredAirConstraint::Xor {
+                            let sc = StructuredAirConstraint::Xor (Xor{
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 block_name: current_block_name,
-                            };
+                                is_fp: lhs_llvm.is_float_value(),
+                                operand_bitwidth: match lhs_llvm.get_type() {
+                                    BasicTypeEnum::IntType(it) => it.get_bit_width(),
+                                    BasicTypeEnum::FloatType(ft) => {
+                                        let local_context = ft.get_context();
+                                        if ft == local_context.f16_type() {
+                                            16
+                                        } else if ft == local_context.f32_type() {
+                                            32
+                                        } else if ft == local_context.f64_type() {
+                                            64
+                                        } else if ft == local_context.f128_type() {
+                                            128
+                                        } else if ft == local_context.x86_f80_type() {
+                                            80
+                                        } else if ft == local_context.ppc_f128_type() {
+                                            128
+                                        } else {
+                                            panic!("Unsupported or unrecognized float type for And: {:?}", ft);
+                                        }
+                                    },
+                                    _ => panic!("And operand has unexpected LLVM type: {:?}. Expected IntType or FloatType.", lhs_llvm.get_type()),
+                                }
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -1440,13 +1355,13 @@ pub fn process_llvm_ir(
                                 .llvm_basic_value_to_air_operand(rhs_llvm);
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
-                            let sc = StructuredAirConstraint::SRem {
+                            let sc = StructuredAirConstraint::SRem(SRem {
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -1464,13 +1379,13 @@ pub fn process_llvm_ir(
                                 .llvm_basic_value_to_air_operand(rhs_llvm);
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
-                            let sc = StructuredAirConstraint::URem {
+                            let sc = StructuredAirConstraint::URem(URem {
                                 operand1: lhs_air_op,
                                 operand2: rhs_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -1506,13 +1421,13 @@ pub fn process_llvm_ir(
                                 },
                                 _ => panic!("SIToFP result has unexpected LLVM type: {:?}. Expected FloatType.", instr.get_type()),
                             };
-                            let sc = StructuredAirConstraint::SIToFP {
+                            let sc = StructuredAirConstraint::SIToFP(SiToFp {
                                 operand: operand_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 result_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -1548,13 +1463,13 @@ pub fn process_llvm_ir(
                                 AnyTypeEnum::IntType(it) => it.get_bit_width(),
                                 _ => panic!("FPToSI result has unexpected LLVM type: {:?}. Expected IntType.", instr.get_type()),
                             };
-                            let sc = StructuredAirConstraint::FPToSI {
+                            let sc = StructuredAirConstraint::FPToSI(FpToSi {
                                 operand: operand_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 result_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -1573,13 +1488,13 @@ pub fn process_llvm_ir(
                                 .llvm_basic_value_to_air_operand(false_val_llvm);
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
-                            let sc = StructuredAirConstraint::Select {
-                                cond: cond_air_op,
-                                true_val: true_val_air_op,
-                                false_val: false_val_air_op,
+                            let sc = StructuredAirConstraint::Select(Select {
+                                condition: cond_air_op,
+                                true_value: true_val_air_op,
+                                false_value: false_val_air_op,
                                 result: result_cs_var,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -1594,21 +1509,13 @@ pub fn process_llvm_ir(
                                 BasicTypeEnum::IntType(it) => it.get_bit_width(),
                                 _ => panic!("ZExt operand has unexpected LLVM type: {:?}. Expected IntType.", operand_llvm.get_type()),
                             };
-                            let result_bitwidth = match instr.get_type() {
-                                AnyTypeEnum::IntType(it) => it.get_bit_width(),
-                                _ => panic!(
-                                    "ZExt result has unexpected LLVM type: {:?}. Expected IntType.",
-                                    instr.get_type()
-                                ),
-                            };
 
-                            let sc = StructuredAirConstraint::ZExt {
+                            let sc = StructuredAirConstraint::ZExt(ZExt {
                                 operand: operand_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
-                                result_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -1631,13 +1538,13 @@ pub fn process_llvm_ir(
                                 ),
                             };
 
-                            let sc = StructuredAirConstraint::SExt {
+                            let sc = StructuredAirConstraint::SExt(SExt {
                                 operand: operand_air_op,
                                 result: result_cs_var,
                                 operand_bitwidth,
                                 result_bitwidth,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
@@ -1668,13 +1575,13 @@ pub fn process_llvm_ir(
                             let result_cs_var = module_arithmetization_ctx
                                 .map_instruction_result_to_new_cs_var(instr);
 
-                            let sc = StructuredAirConstraint::GetElementPtr {
+                            let sc = StructuredAirConstraint::GetElementPtr(GetElementPtr {
                                 base: base_op,
                                 index: index_op,
                                 element_size_bytes: element_size,
                                 result: result_cs_var,
                                 block_name: current_block_name,
-                            };
+                            });
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         } else {
                             println!("    WARN: Skipping GEP with no indices.");

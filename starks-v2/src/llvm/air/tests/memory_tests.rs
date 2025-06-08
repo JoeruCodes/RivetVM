@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod memory_air_tests {
-    use crate::llvm::air::codegen::ctx::AirGenContext;
     use crate::llvm::air::codegen::memory;
+    use lang::constraints::{AirExpression, AirTraceVariable, RowOffset};
+    use lang::ctx::AirGenContext;
     use lang::{Operand as LangOperand, StructuredAirConstraint, process_llvm_ir};
 
     const CLK_DIFFERENCE_BITWIDTH_FOR_TEST: usize = 32;

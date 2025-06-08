@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use lang::Operand;
 use lang::StructuredAirConstraint;
+use lang::constraints::phi::Phi;
 
 use super::PreprocessedPhiTransitions;
 use super::PreprocessedStructuredConstraints;
@@ -76,11 +77,11 @@ impl AirCodegen {
         }
 
         for constraint in structured_constraints_from_lang {
-            if let StructuredAirConstraint::Phi {
+            if let StructuredAirConstraint::Phi(Phi {
                 result,
                 incoming_values,
                 block_name: header_block_name,
-            } = constraint
+            }) = constraint
             {
                 if header_block_name == "loop_header" {
                     for (current_value_operand_ref, current_predecessor_block_name_ref) in

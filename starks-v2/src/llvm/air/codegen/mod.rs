@@ -1,6 +1,7 @@
 use crate::Field;
-use ctx::AirGenContext;
 use lang::ConstraintSystemVariable as LangVariable;
+use lang::constraints::{AirExpression, AirTraceVariable, RowOffset};
+use lang::ctx::AirGenContext;
 use lang::process_llvm_ir;
 pub use lang::{
     ConstraintSystemVariable, IntPredicate as LangIntPredicate, Operand, StructuredAirConstraint,
@@ -9,7 +10,7 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 pub mod ctx;
 pub mod resolvers;
-use super::types::{AirExpression, GeneratedAir};
+use super::types::GeneratedAir;
 pub mod memory;
 pub mod preprocessors;
 
@@ -48,57 +49,27 @@ impl AirCodegen {
                 let mut max_var_id = 0;
                 for constraint in &structured_constraints {
                     match constraint {
-                        StructuredAirConstraint::Add { result, .. } => {
-                            max_var_id = max_var_id.max(result.0)
+                        StructuredAirConstraint::Add(v) => max_var_id = max_var_id.max(v.result.0),
+                        StructuredAirConstraint::Sub(v) => max_var_id = max_var_id.max(v.result.0),
+                        StructuredAirConstraint::Multiply(v) => {
+                            max_var_id = max_var_id.max(v.result.0)
                         }
-                        StructuredAirConstraint::Sub { result, .. } => {
-                            max_var_id = max_var_id.max(result.0)
-                        }
-                        StructuredAirConstraint::Multiply { result, .. } => {
-                            max_var_id = max_var_id.max(result.0)
-                        }
-                        StructuredAirConstraint::SDiv { result, .. } => {
-                            max_var_id = max_var_id.max(result.0)
-                        }
-                        StructuredAirConstraint::UDiv { result, .. } => {
-                            max_var_id = max_var_id.max(result.0)
-                        }
-                        StructuredAirConstraint::Shl { result, .. } => {
-                            max_var_id = max_var_id.max(result.0)
-                        }
-                        StructuredAirConstraint::Shr { result, .. } => {
-                            max_var_id = max_var_id.max(result.0)
-                        }
-                        StructuredAirConstraint::AShr { result, .. } => {
-                            max_var_id = max_var_id.max(result.0)
-                        }
-                        StructuredAirConstraint::And { result, .. } => {
-                            max_var_id = max_var_id.max(result.0)
-                        }
-                        StructuredAirConstraint::Or { result, .. } => {
-                            max_var_id = max_var_id.max(result.0)
-                        }
-                        StructuredAirConstraint::Xor { result, .. } => {
-                            max_var_id = max_var_id.max(result.0)
-                        }
-                        StructuredAirConstraint::Icmp { result, .. } => {
-                            max_var_id = max_var_id.max(result.0)
-                        }
-                        StructuredAirConstraint::Phi { result, .. } => {
-                            max_var_id = max_var_id.max(result.0)
-                        }
+                        StructuredAirConstraint::SDiv(v) => max_var_id = max_var_id.max(v.result.0),
+                        StructuredAirConstraint::UDiv(v) => max_var_id = max_var_id.max(v.result.0),
+                        StructuredAirConstraint::Shl(v) => max_var_id = max_var_id.max(v.result.0),
+                        StructuredAirConstraint::Shr(v) => max_var_id = max_var_id.max(v.result.0),
+                        StructuredAirConstraint::AShr(v) => max_var_id = max_var_id.max(v.result.0),
+                        StructuredAirConstraint::And(v) => max_var_id = max_var_id.max(v.result.0),
+                        StructuredAirConstraint::Or(v) => max_var_id = max_var_id.max(v.result.0),
+                        StructuredAirConstraint::Xor(v) => max_var_id = max_var_id.max(v.result.0),
+                        StructuredAirConstraint::Icmp(v) => max_var_id = max_var_id.max(v.result.0),
+                        StructuredAirConstraint::Phi(v) => max_var_id = max_var_id.max(v.result.0),
                         StructuredAirConstraint::Alloca { ptr_result, .. } => {
                             max_var_id = max_var_id.max(ptr_result.0)
                         }
-                        StructuredAirConstraint::SRem { result, .. } => {
-                            max_var_id = max_var_id.max(result.0)
-                        }
-                        StructuredAirConstraint::URem { result, .. } => {
-                            max_var_id = max_var_id.max(result.0)
-                        }
-                        StructuredAirConstraint::FAdd { result, .. } => {
-                            max_var_id = max_var_id.max(result.0)
-                        }
+                        StructuredAirConstraint::SRem(v) => max_var_id = max_var_id.max(v.result.0),
+                        StructuredAirConstraint::URem(v) => max_var_id = max_var_id.max(v.result.0),
+                        StructuredAirConstraint::FAdd(v) => max_var_id = max_var_id.max(v.result.0),
                         _ => {}
                     }
                 }
