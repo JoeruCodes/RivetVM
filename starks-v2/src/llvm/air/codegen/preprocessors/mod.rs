@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use lang::ConstraintSystemVariable as LangVariable;
 use lang::Operand;
 use lang::StructuredAirConstraint;
 use lang::constraints::phi::Phi;
@@ -7,7 +8,6 @@ use lang::constraints::phi::Phi;
 use super::PreprocessedPhiTransitions;
 use super::PreprocessedStructuredConstraints;
 use crate::llvm::air::codegen::AirCodegen;
-use crate::llvm::air::codegen::LangVariable;
 
 impl AirCodegen {
     pub fn preprocess_structured_constraints(
@@ -17,18 +17,15 @@ impl AirCodegen {
         let mut switch_instructions = Vec::new();
 
         for constraint in structured_constraints_from_lang {
-            if let StructuredAirConstraint::ConditionalBranch {
-                condition,
-                true_block_name,
-                false_block_name,
-                block_name: _,
-            } = constraint
-            {
+            if let StructuredAirConstraint::ConditionalBranch(cond_branch) = constraint {
                 phi_condition_map.insert(
-                    (true_block_name.clone(), false_block_name.clone()),
-                    *condition,
+                    (
+                        cond_branch.true_block_name.clone(),
+                        cond_branch.false_block_name.clone(),
+                    ),
+                    cond_branch.condition,
                 );
-            } else if let StructuredAirConstraint::Switch { block_name: _, .. } = constraint {
+            } else if let StructuredAirConstraint::Switch(_) = constraint {
                 switch_instructions.push(constraint.clone());
             }
         }
@@ -49,25 +46,19 @@ impl AirCodegen {
 
         for constraint in structured_constraints_from_lang {
             match constraint {
-                StructuredAirConstraint::Branch {
-                    target_block_name,
-                    block_name,
-                } => {
-                    block_terminators
-                        .insert(block_name.clone(), (target_block_name.clone(), None, None));
-                }
-                StructuredAirConstraint::ConditionalBranch {
-                    condition,
-                    true_block_name,
-                    false_block_name,
-                    block_name,
-                } => {
+                StructuredAirConstraint::Branch(branch) => {
                     block_terminators.insert(
-                        block_name.clone(),
+                        branch.block_name.clone(),
+                        (branch.target_block_name.clone(), None, None),
+                    );
+                }
+                StructuredAirConstraint::ConditionalBranch(cond_branch) => {
+                    block_terminators.insert(
+                        cond_branch.block_name.clone(),
                         (
-                            true_block_name.clone(),
-                            Some(false_block_name.clone()),
-                            Some(*condition),
+                            cond_branch.true_block_name.clone(),
+                            Some(cond_branch.false_block_name.clone()),
+                            Some(cond_branch.condition),
                         ),
                     );
                 }
@@ -124,5 +115,91 @@ impl AirCodegen {
         PreprocessedPhiTransitions {
             loop_phi_transitions,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lang::{
+        Operand,
+        constraints::{
+            branch::Branch, conditional_branch::ConditionalBranch, phi::Phi, switch::Switch,
+        },
+    };
+
+    #[test]
+    fn test_preprocess_structured_constraints() {
+        let cond_var = LangVariable(0);
+        let constraints = vec![
+            StructuredAirConstraint::ConditionalBranch(ConditionalBranch {
+                condition: cond_var,
+                true_block_name: "if.then".to_string(),
+                false_block_name: "if.else".to_string(),
+                block_name: "entry".to_string(),
+            }),
+            StructuredAirConstraint::Switch(Switch {
+                condition_operand: Operand::Var(LangVariable(1)),
+                default_target_block_name: "sw.default".to_string(),
+                cases: vec![(Operand::Const(10), "sw.case1".to_string())],
+                block_name: "sw.entry".to_string(),
+            }),
+        ];
+
+        let preprocessed = AirCodegen::preprocess_structured_constraints(&constraints);
+
+        assert_eq!(preprocessed.phi_condition_map.len(), 1);
+        assert_eq!(
+            preprocessed
+                .phi_condition_map
+                .get(&("if.then".to_string(), "if.else".to_string())),
+            Some(&cond_var)
+        );
+
+        assert_eq!(preprocessed.switch_instructions.len(), 1);
+        matches!(
+            preprocessed.switch_instructions[0],
+            StructuredAirConstraint::Switch(_)
+        );
+    }
+
+    #[test]
+    fn test_preprocess_phi_transitions() {
+        let phi_result_var = LangVariable(0);
+        let loop_var = LangVariable(1);
+        let cond_var = LangVariable(2);
+
+        let constraints = vec![
+            StructuredAirConstraint::Phi(Phi {
+                result: phi_result_var,
+                incoming_values: vec![
+                    (Operand::Const(0), "entry".to_string()),
+                    (Operand::Var(loop_var), "loop_latch".to_string()),
+                ],
+                block_name: "loop_header".to_string(),
+            }),
+            StructuredAirConstraint::ConditionalBranch(ConditionalBranch {
+                condition: cond_var,
+                true_block_name: "loop_header".to_string(),
+                false_block_name: "loop_exit".to_string(),
+                block_name: "loop_latch".to_string(),
+            }),
+            StructuredAirConstraint::Branch(Branch {
+                target_block_name: "end".to_string(),
+                block_name: "loop_exit".to_string(),
+            }),
+        ];
+
+        let preprocessed = AirCodegen::preprocess_phi_transitions(&constraints);
+
+        assert_eq!(preprocessed.loop_phi_transitions.len(), 1);
+
+        let transition_key = ("loop_header".to_string(), "loop_latch".to_string());
+        let expected_transitions = vec![(phi_result_var, Operand::Var(loop_var))];
+
+        assert_eq!(
+            preprocessed.loop_phi_transitions.get(&transition_key),
+            Some(&expected_transitions)
+        );
     }
 }

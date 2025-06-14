@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-use lang::Operand;
-use lang::constraints::lang_operand_to_air_expression;
-
-use crate::llvm::air::codegen::AirCodegen;
-use crate::llvm::air::codegen::LangVariable;
-use lang::constraints::{AirExpression, AirTraceVariable, RowOffset};
+use super::AirCodegen;
+use crate::Field;
 use lang::ctx::AirGenContext;
+use lang::{
+    ConstraintSystemVariable as LangVariable, Operand,
+    constraints::{AirExpression, AirTraceVariable, RowOffset, lang_operand_to_air_expression},
+};
 
 impl AirCodegen {
     pub fn resolve_phi_transitions(

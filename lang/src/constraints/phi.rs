@@ -114,17 +114,12 @@ impl ResolveConstraint for Phi {
         } else if !self.incoming_values.is_empty() {
             let mut found_controlling_switch = false;
             for sw_instr_variant in switch_instructions {
-                if let StructuredAirConstraint::Switch {
-                    condition_operand: switch_cond_lang_op,
-                    default_target_block_name: switch_default_name,
-                    cases: switch_cases,
-                    ..
-                } = sw_instr_variant
-                {
+                if let StructuredAirConstraint::Switch(switch_instr) = sw_instr_variant {
                     let mut relevant_to_phi = true;
                     for (_phi_op, phi_pred_name) in &self.incoming_values {
-                        if !(phi_pred_name.as_str() == switch_default_name.as_str()
-                            || switch_cases.iter().any(|(_, case_target)| {
+                        if !(phi_pred_name.as_str()
+                            == switch_instr.default_target_block_name.as_str()
+                            || switch_instr.cases.iter().any(|(_, case_target)| {
                                 case_target.as_str() == phi_pred_name.as_str()
                             }))
                         {
@@ -138,16 +133,17 @@ impl ResolveConstraint for Phi {
                     found_controlling_switch = true;
                     println!(
                         "  PHI (multi-input): Found potentially controlling Switch: cond {:?}, default {}, cases {:?}",
-                        switch_cond_lang_op, switch_default_name, switch_cases
+                        switch_instr.condition_operand, switch_instr.default_target_block_name, switch_instr.cases
                     );
 
-                    let switch_cond_expr = lang_operand_to_air_expression(*switch_cond_lang_op);
+                    let switch_cond_expr =
+                        lang_operand_to_air_expression(switch_instr.condition_operand);
 
                     let mut case_selector_exprs = Vec::new();
                     let mut sum_of_is_case_k_terms_for_default_check: Option<Box<AirExpression>> =
                         None;
 
-                    for (case_val_lang_op, case_target_name) in switch_cases {
+                    for (case_val_lang_op, case_target_name) in &switch_instr.cases {
                         let case_val_expr = lang_operand_to_air_expression(*case_val_lang_op);
 
                         let is_this_case_aux_var = ctx.new_aux_variable();
@@ -208,9 +204,9 @@ impl ResolveConstraint for Phi {
                         Box::new(AirExpression::Constant(1)),
                     ));
 
-                    let phi_op_for_default = self.incoming_values.iter().find(|(_, pred_name)| pred_name.as_str() == switch_default_name.as_str())
+                    let phi_op_for_default = self.incoming_values.iter().find(|(_, pred_name)| pred_name.as_str() == switch_instr.default_target_block_name.as_str())
                         .map(|(op, _)| lang_operand_to_air_expression(*op))
-                        .expect(&format!("PHI from Switch: Could not find PHI incoming value for default target {}", switch_default_name));
+                        .expect(&format!("PHI from Switch: Could not find PHI incoming value for default target {}", switch_instr.default_target_block_name));
 
                     let mut selected_value_sum: Option<Box<AirExpression>> = None;
                     for (is_case_expr, phi_val_expr) in case_selector_exprs {

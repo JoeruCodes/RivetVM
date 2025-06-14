@@ -1,8 +1,38 @@
-use crate::constraints::{AirExpression, AirTraceVariable, RowOffset};
+use std::collections::HashMap;
 
+use crate::{
+    constraints::{call_stack::CallStack, AirExpression, AirTraceVariable, RowOffset},
+    ConstraintSystemVariable, Operand,
+};
+
+#[derive(Debug, Clone)]
+pub enum NextBlock {
+    Direct(String),
+    Conditional {
+        condition: ConstraintSystemVariable,
+        true_block: String,
+        false_block: String,
+    },
+    Switch {
+        condition: Operand,
+        default_block: String,
+        cases: Vec<(Operand, String)>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionContext {
+    pub parameters: Vec<ConstraintSystemVariable>,
+    pub entry_block: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct AirGenContext {
     pub next_available_trace_col: usize,
-    internal_constraints: Vec<AirExpression>,
+    pub(crate) internal_constraints: Vec<AirExpression>,
+    pub functions: HashMap<String, FunctionContext>,
+    pub call_stack: CallStack,
+    pub next_block: Option<NextBlock>,
 }
 
 impl AirGenContext {
@@ -10,7 +40,40 @@ impl AirGenContext {
         AirGenContext {
             next_available_trace_col: initial_max_var_id + 1,
             internal_constraints: Vec::new(),
+            functions: HashMap::new(),
+            call_stack: CallStack::new(),
+            next_block: None,
         }
+    }
+
+    pub fn set_next_block(&mut self, block_name: Option<String>) {
+        self.next_block = block_name.map(NextBlock::Direct);
+    }
+
+    pub fn set_conditional_next_block(
+        &mut self,
+        condition: ConstraintSystemVariable,
+        true_block: String,
+        false_block: String,
+    ) {
+        self.next_block = Some(NextBlock::Conditional {
+            condition,
+            true_block,
+            false_block,
+        });
+    }
+
+    pub fn set_switch_next_block(
+        &mut self,
+        condition: Operand,
+        default_block: String,
+        cases: Vec<(Operand, String)>,
+    ) {
+        self.next_block = Some(NextBlock::Switch {
+            condition,
+            default_block,
+            cases,
+        });
     }
 
     pub fn new_aux_variable(&mut self) -> AirTraceVariable {

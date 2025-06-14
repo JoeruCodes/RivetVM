@@ -2,18 +2,37 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::context::Context;
 use inkwell::types::{AnyTypeEnum, BasicTypeEnum};
 use inkwell::values::{
-    AnyValue, AnyValueEnum, BasicValueEnum, InstructionOpcode, InstructionValue, PhiValue,
+    AnyValue, AnyValueEnum, AsValueRef, BasicValueEnum, CallSiteValue, InstructionOpcode,
+    InstructionValue, PhiValue,
 };
+use inkwell::AtomicRMWBinOp;
 pub use inkwell::FloatPredicate;
 pub use inkwell::IntPredicate;
+use llvm_sys::core::{
+    LLVMBasicBlockAsValue, LLVMGetAtomicRMWBinOp, LLVMGetBasicBlockName, LLVMGetNumSuccessors,
+    LLVMGetSuccessor,
+};
 pub mod constraints;
 pub mod ctx;
 pub mod utils;
 use std::collections::HashMap;
+use std::ffi::CStr;
 
 use crate::constraints::add::Add;
 use crate::constraints::and::And;
 use crate::constraints::ashr::Ashr;
+use crate::constraints::assign::Assign;
+use crate::constraints::atomic_cmp_xchg::AtomicCmpXchg;
+use crate::constraints::atomic_rmw::AtomicRMW;
+use crate::constraints::branch::Branch;
+use crate::constraints::call::Call;
+use crate::constraints::callbr::CallBr;
+use crate::constraints::catch_pad::CatchPad;
+use crate::constraints::catch_ret::CatchRet;
+use crate::constraints::catch_switch::CatchSwitch;
+use crate::constraints::cleanup_pad::CleanupPad;
+use crate::constraints::cleanup_ret::CleanupRet;
+use crate::constraints::conditional_branch::ConditionalBranch;
 use crate::constraints::fadd::FAdd;
 use crate::constraints::fcmp::FCmp;
 use crate::constraints::fdiv::FDiv;
@@ -27,9 +46,12 @@ use crate::constraints::frem::FRem;
 use crate::constraints::fsub::FSub;
 use crate::constraints::get_elem_ptr::GetElementPtr;
 use crate::constraints::icmp::Icmp;
+use crate::constraints::invoke::Invoke;
 use crate::constraints::mul::Mul;
 use crate::constraints::or::Or;
 use crate::constraints::phi::Phi;
+use crate::constraints::ret::Ret;
+use crate::constraints::return_address::ReturnAddress;
 use crate::constraints::sdiv::SDiv;
 use crate::constraints::select::Select;
 use crate::constraints::sext::SExt;
@@ -38,6 +60,7 @@ use crate::constraints::shr::Shr;
 use crate::constraints::sitofp::SiToFp;
 use crate::constraints::srem::SRem;
 use crate::constraints::sub::Sub;
+use crate::constraints::switch::Switch;
 use crate::constraints::trunc::Trunc;
 use crate::constraints::udiv::UDiv;
 use crate::constraints::uitofp::UiToFp;
@@ -104,6 +127,18 @@ impl PartialOrd for MemoryAccessLogEntry {
 
 #[derive(Debug, Clone)]
 pub enum StructuredAirConstraint {
+    CleanupPad(CleanupPad),
+    CleanupRet(CleanupRet),
+    CatchPad(CatchPad),
+    CatchRet(CatchRet),
+    CatchSwitch(CatchSwitch),
+    ReturnAddress(ReturnAddress),
+    Assign(Assign),
+    AtomicCmpXchg(AtomicCmpXchg),
+    AtomicRMW(AtomicRMW),
+    Call(Call),
+    CallBr(CallBr),
+    Invoke(Invoke),
     FMul(FMul),
     FDiv(FDiv),
     FNeg(FNeg),
@@ -125,32 +160,16 @@ pub enum StructuredAirConstraint {
     SRem(SRem),
     URem(URem),
     Icmp(Icmp),
-    Branch {
-        target_block_name: String,
-        block_name: String,
-    },
-    ConditionalBranch {
-        condition: ConstraintSystemVariable,
-        true_block_name: String,
-        false_block_name: String,
-        block_name: String,
-    },
+    Branch(Branch),
+    ConditionalBranch(ConditionalBranch),
     Phi(Phi),
-    Return {
-        value: Option<Operand>,
-        block_name: String,
-    },
+    Return(Ret),
     Alloca {
         ptr_result: ConstraintSystemVariable,
         allocated_type: String,
         block_name: String,
     },
-    Switch {
-        condition_operand: Operand,
-        default_target_block_name: String,
-        cases: Vec<(Operand, String)>,
-        block_name: String,
-    },
+    Switch(Switch),
     Trunc(Trunc),
     FPTrunc(FpTrunc),
     ZExt(ZExt),
@@ -162,15 +181,25 @@ pub enum StructuredAirConstraint {
     FPToSI(fptosi::FpToSi),
     Select(Select),
     GetElementPtr(GetElementPtr),
+    ExtractValue {
+        aggregate: ConstraintSystemVariable,
+        index: u32,
+        result: ConstraintSystemVariable,
+        block_name: String,
+    },
 }
 
 pub struct ArithmetizationContext<'ctx> {
     next_variable_id: usize,
     llvm_to_cs_var_map: HashMap<BasicValueEnum<'ctx>, ConstraintSystemVariable>,
+    cmpxchg_results:
+        HashMap<InstructionValue<'ctx>, (ConstraintSystemVariable, ConstraintSystemVariable)>,
     pub structured_constraints: Vec<StructuredAirConstraint>,
     current_block_name_for_constraints: String,
     pub memory_log: Vec<MemoryAccessLogEntry>,
     next_time_step_id: usize,
+    csp: Option<ConstraintSystemVariable>,
+    fp: Option<ConstraintSystemVariable>,
 }
 
 impl<'ctx> ArithmetizationContext<'ctx> {
@@ -178,10 +207,13 @@ impl<'ctx> ArithmetizationContext<'ctx> {
         ArithmetizationContext {
             next_variable_id: 0,
             llvm_to_cs_var_map: HashMap::new(),
+            cmpxchg_results: HashMap::new(),
             structured_constraints: Vec::new(),
             current_block_name_for_constraints: String::new(),
             memory_log: Vec::new(),
             next_time_step_id: 0,
+            csp: None,
+            fp: None,
         }
     }
 
@@ -195,10 +227,10 @@ impl<'ctx> ArithmetizationContext<'ctx> {
         let id = self.next_time_step_id;
         self.next_time_step_id += 1;
         let time_cs_var = self.new_cs_variable();
-        println!(
-            "    INFO: New Time Step Variable created: {:?} (logical time_id {})",
-            time_cs_var, id
-        );
+        
+        
+        
+        
         time_cs_var
     }
 
@@ -281,6 +313,15 @@ pub fn process_llvm_ir(
     let mut module_arithmetization_ctx = ArithmetizationContext::new();
 
     for function_value in module.get_functions() {
+        
+        if module_arithmetization_ctx.csp.is_none() {
+            let initial_csp = module_arithmetization_ctx.new_cs_variable();
+            let initial_fp = module_arithmetization_ctx.new_cs_variable();
+            
+            module_arithmetization_ctx.csp = Some(initial_csp);
+            module_arithmetization_ctx.fp = Some(initial_fp);
+        }
+
         for arg in function_value.get_param_iter() {
             let cs_var = module_arithmetization_ctx.new_cs_variable();
             module_arithmetization_ctx
@@ -316,6 +357,66 @@ pub fn process_llvm_ir(
                 };
 
                 match opcode {
+                    InstructionOpcode::CatchPad => {
+                        let result_cs_var =
+                            module_arithmetization_ctx.map_instruction_result_to_new_cs_var(instr);
+                        let sc = StructuredAirConstraint::CatchPad(CatchPad {
+                            result: result_cs_var,
+                            block_name: current_block_name,
+                        });
+                        module_arithmetization_ctx.add_structured_constraint(sc);
+                    }
+                    InstructionOpcode::CatchRet => {
+                        
+                        if let Some(block) = get_operand_as_basic_block(1) {
+                            let target_block_name =
+                                block.get_name().to_str().unwrap_or("").to_string();
+                            let sc = StructuredAirConstraint::CatchRet(CatchRet {
+                                target_block_name,
+                                block_name: current_block_name,
+                            });
+                            module_arithmetization_ctx.add_structured_constraint(sc);
+                        } else {
+                            panic!("CatchRet expects a basic block as its second operand");
+                        }
+                    }
+                    InstructionOpcode::CatchSwitch => {
+                        let result_cs_var =
+                            module_arithmetization_ctx.map_instruction_result_to_new_cs_var(instr);
+
+                        let mut handler_block_names = Vec::new();
+                        
+                        
+                        
+                        for i in 1..num_operands {
+                            if let Some(block) = get_operand_as_basic_block(i) {
+                                let block_name =
+                                    block.get_name().to_str().unwrap_or("").to_string();
+                                handler_block_names.push(block_name);
+                            }
+                        }
+
+                        let sc = StructuredAirConstraint::CatchSwitch(CatchSwitch {
+                            unwind_dest_block_name: None, 
+                            handler_block_names,
+                            result: result_cs_var,
+                            block_name: current_block_name,
+                        });
+                        module_arithmetization_ctx.add_structured_constraint(sc);
+                    }
+                    InstructionOpcode::BitCast => {
+                        let operand_llvm = get_operand_as_basic_value(0).expect("BitCast op0");
+                        let operand_air = module_arithmetization_ctx
+                            .llvm_basic_value_to_air_operand(operand_llvm);
+                        let result_cs_var =
+                            module_arithmetization_ctx.map_instruction_result_to_new_cs_var(instr);
+
+                        let sc = StructuredAirConstraint::Assign(Assign {
+                            dest: result_cs_var,
+                            src: operand_air,
+                        });
+                        module_arithmetization_ctx.add_structured_constraint(sc);
+                    }
                     InstructionOpcode::Add => {
                         if num_operands >= 2 {
                             let lhs_llvm = get_operand_as_basic_value(0).expect("Add op0");
@@ -987,10 +1088,10 @@ pub fn process_llvm_ir(
                                 .to_str()
                                 .unwrap_or("_unnamed_block")
                                 .to_string();
-                            sc = StructuredAirConstraint::Branch {
+                            sc = StructuredAirConstraint::Branch(Branch {
                                 target_block_name,
                                 block_name: current_block_name,
-                            };
+                            });
                         } else if num_operands == 3 {
                             let cond_llvm = get_operand_as_basic_value(0).expect(
                                 "Conditional Br condition operand missing or not BasicValue",
@@ -1013,12 +1114,12 @@ pub fn process_llvm_ir(
                                 .to_str()
                                 .unwrap_or("_unnamed_true_block")
                                 .to_string();
-                            sc = StructuredAirConstraint::ConditionalBranch {
+                            sc = StructuredAirConstraint::ConditionalBranch(ConditionalBranch {
                                 condition: cond_cs_var,
                                 true_block_name,
                                 false_block_name,
                                 block_name: current_block_name,
-                            };
+                            });
                         } else {
                             instruction = instr.get_next_instruction();
                             continue;
@@ -1050,6 +1151,62 @@ pub fn process_llvm_ir(
                         module_arithmetization_ctx.add_structured_constraint(sc);
                     }
                     InstructionOpcode::Return => {
+                        let time_step = module_arithmetization_ctx.new_time_step_variable();
+
+                        let fp_c = module_arithmetization_ctx.fp.expect("FP not initialized");
+
+                        
+                        let addr_of_old_fp = module_arithmetization_ctx.new_cs_variable();
+                        module_arithmetization_ctx.add_structured_constraint(
+                            StructuredAirConstraint::Sub(Sub {
+                                operand1: Operand::Var(fp_c),
+                                operand2: Operand::Const(2),
+                                result: addr_of_old_fp,
+                                block_name: current_block_name.clone(),
+                            }),
+                        );
+                        let popped_fp = module_arithmetization_ctx.new_cs_variable();
+                        module_arithmetization_ctx.add_memory_log_entry(MemoryAccessLogEntry {
+                            address: Operand::Var(addr_of_old_fp),
+                            value: Operand::Var(popped_fp),
+                            time_step,
+                            access_type: MemoryAccessType::Read,
+                            bitwidth: 64,
+                            block_name: current_block_name.clone(),
+                        });
+
+                        
+                        let addr_of_ret_addr = module_arithmetization_ctx.new_cs_variable();
+                        module_arithmetization_ctx.add_structured_constraint(
+                            StructuredAirConstraint::Sub(Sub {
+                                operand1: Operand::Var(fp_c),
+                                operand2: Operand::Const(1),
+                                result: addr_of_ret_addr,
+                                block_name: current_block_name.clone(),
+                            }),
+                        );
+                        let popped_ret_addr = module_arithmetization_ctx.new_cs_variable();
+                        module_arithmetization_ctx.add_memory_log_entry(MemoryAccessLogEntry {
+                            address: Operand::Var(addr_of_ret_addr),
+                            value: Operand::Var(popped_ret_addr),
+                            time_step,
+                            access_type: MemoryAccessType::Read,
+                            bitwidth: 64,
+                            block_name: current_block_name.clone(),
+                        });
+
+                        
+                        let new_csp = module_arithmetization_ctx.new_cs_variable();
+                        module_arithmetization_ctx.add_structured_constraint(
+                            StructuredAirConstraint::Assign(Assign {
+                                dest: new_csp,
+                                src: Operand::Var(addr_of_old_fp),
+                            }),
+                        );
+
+                        module_arithmetization_ctx.csp = Some(new_csp);
+                        module_arithmetization_ctx.fp = Some(popped_fp);
+
                         let mut actual_ret_op: Option<Operand> = None;
                         if num_operands == 1 {
                             if let Some(ret_val_llvm) = get_operand_as_basic_value(0) {
@@ -1059,10 +1216,51 @@ pub fn process_llvm_ir(
                                 );
                             }
                         }
-                        let sc = StructuredAirConstraint::Return {
+                        let sc = StructuredAirConstraint::Return(Ret {
                             value: actual_ret_op,
                             block_name: current_block_name,
-                        };
+                            time_step,
+                        });
+                        module_arithmetization_ctx.add_structured_constraint(sc);
+                    }
+                    InstructionOpcode::AddrSpaceCast => {
+                        let operand_llvm =
+                            get_operand_as_basic_value(0).expect("AddrSpaceCast op0");
+                        let operand_air = module_arithmetization_ctx
+                            .llvm_basic_value_to_air_operand(operand_llvm);
+                        let result_cs_var =
+                            module_arithmetization_ctx.map_instruction_result_to_new_cs_var(instr);
+
+                        let sc = StructuredAirConstraint::Assign(Assign {
+                            dest: result_cs_var,
+                            src: operand_air,
+                        });
+                        module_arithmetization_ctx.add_structured_constraint(sc);
+                    }
+                    InstructionOpcode::PtrToInt => {
+                        let operand_llvm = get_operand_as_basic_value(0).expect("PtrToInt op0");
+                        let operand_air = module_arithmetization_ctx
+                            .llvm_basic_value_to_air_operand(operand_llvm);
+                        let result_cs_var =
+                            module_arithmetization_ctx.map_instruction_result_to_new_cs_var(instr);
+
+                        let sc = StructuredAirConstraint::Assign(Assign {
+                            dest: result_cs_var,
+                            src: operand_air,
+                        });
+                        module_arithmetization_ctx.add_structured_constraint(sc);
+                    }
+                    InstructionOpcode::IntToPtr => {
+                        let operand_llvm = get_operand_as_basic_value(0).expect("IntToPtr op0");
+                        let operand_air = module_arithmetization_ctx
+                            .llvm_basic_value_to_air_operand(operand_llvm);
+                        let result_cs_var =
+                            module_arithmetization_ctx.map_instruction_result_to_new_cs_var(instr);
+
+                        let sc = StructuredAirConstraint::Assign(Assign {
+                            dest: result_cs_var,
+                            src: operand_air,
+                        });
                         module_arithmetization_ctx.add_structured_constraint(sc);
                     }
                     InstructionOpcode::Alloca => {
@@ -1070,14 +1268,50 @@ pub fn process_llvm_ir(
                             module_arithmetization_ctx.map_instruction_result_to_new_cs_var(instr);
                         let allocated_type = instr
                             .get_allocated_type()
-                            .expect("Alloca instruction must have a type")
-                            .print_to_string();
-                        let sc = StructuredAirConstraint::Alloca {
-                            ptr_result: ptr_cs_var,
-                            allocated_type: allocated_type.to_string(),
-                            block_name: current_block_name,
+                            .expect("Alloca instruction must have a type");
+
+                        
+                        let csp_c = module_arithmetization_ctx.csp.expect("CSP not initialized");
+                        let assign_sc = StructuredAirConstraint::Assign(Assign {
+                            dest: ptr_cs_var,
+                            src: Operand::Var(csp_c),
+                        });
+                        module_arithmetization_ctx.add_structured_constraint(assign_sc);
+
+                        
+                        let size = match allocated_type {
+                            BasicTypeEnum::IntType(it) => (it.get_bit_width() as u128 + 7) / 8, 
+                            BasicTypeEnum::PointerType(_) => 8, 
+                            BasicTypeEnum::FloatType(ft) => {
+                                let local_context = ft.get_context();
+                                if ft == local_context.f16_type() {
+                                    2
+                                } else if ft == local_context.f32_type() {
+                                    4
+                                } else if ft == local_context.f64_type() {
+                                    8
+                                } else if ft == local_context.f128_type() {
+                                    16
+                                } else if ft == local_context.x86_f80_type() {
+                                    10
+                                } else if ft == local_context.ppc_f128_type() {
+                                    16
+                                } else {
+                                    panic!("Unsupported float type for alloca size")
+                                }
+                            }
+                            _ => panic!("Unsupported type for alloca size calculation"),
                         };
-                        module_arithmetization_ctx.add_structured_constraint(sc);
+
+                        let new_csp = module_arithmetization_ctx.new_cs_variable();
+                        let add_sc = StructuredAirConstraint::ReturnAddress(ReturnAddress {
+                            operand1: Operand::Var(csp_c),
+                            operand2: Operand::Const(size),
+                            result: new_csp,
+                            block_name: current_block_name.clone(),
+                        });
+                        module_arithmetization_ctx.add_structured_constraint(add_sc);
+                        module_arithmetization_ctx.csp = Some(new_csp);
                     }
                     InstructionOpcode::Store => {
                         if num_operands == 2 {
@@ -1188,12 +1422,12 @@ pub fn process_llvm_ir(
                                 air_cases.push((case_val_air_op, case_dest_name));
                             }
                         }
-                        let sc = StructuredAirConstraint::Switch {
+                        let sc = StructuredAirConstraint::Switch(Switch {
                             condition_operand: cond_air_op,
                             default_target_block_name: default_dest_name,
                             cases: air_cases,
                             block_name: current_block_name,
-                        };
+                        });
                         module_arithmetization_ctx.add_structured_constraint(sc);
                     }
                     InstructionOpcode::Sub => {
@@ -1519,6 +1753,30 @@ pub fn process_llvm_ir(
                             module_arithmetization_ctx.add_structured_constraint(sc);
                         }
                     }
+                    InstructionOpcode::CleanupPad => {
+                        let result_cs_var =
+                            module_arithmetization_ctx.map_instruction_result_to_new_cs_var(instr);
+                        let sc = StructuredAirConstraint::CleanupPad(CleanupPad {
+                            result: result_cs_var,
+                            block_name: current_block_name,
+                        });
+                        module_arithmetization_ctx.add_structured_constraint(sc);
+                    }
+                    InstructionOpcode::CleanupRet => {
+                        
+                        
+                        let unwind_dest_block_name = if num_operands > 1 {
+                            get_operand_as_basic_block(1)
+                                .map(|b| b.get_name().to_str().unwrap_or("").to_string())
+                        } else {
+                            None
+                        };
+                        let sc = StructuredAirConstraint::CleanupRet(CleanupRet {
+                            unwind_dest_block_name,
+                            block_name: current_block_name,
+                        });
+                        module_arithmetization_ctx.add_structured_constraint(sc);
+                    }
                     InstructionOpcode::SExt => {
                         if num_operands == 1 {
                             let operand_llvm = get_operand_as_basic_value(0).expect("SExt op0");
@@ -1591,6 +1849,524 @@ pub fn process_llvm_ir(
                             }
                         }
                     }
+                    InstructionOpcode::Invoke => {
+                        let time_step = module_arithmetization_ctx.new_time_step_variable();
+
+                        
+                        let _parent_block = instr
+                            .get_parent()
+                            .expect("Invoke instruction must have a parent block");
+
+                        let mut successors = {
+                            let num_successors =
+                                unsafe { LLVMGetNumSuccessors(instr.as_value_ref()) };
+                            let mut successors = Vec::new();
+                            for i in 0..num_successors {
+                                let successor =
+                                    unsafe { LLVMGetSuccessor(instr.as_value_ref(), i) };
+                                successors.push(successor);
+                            }
+                            successors
+                        };
+                        let normal_block = successors[0];
+                        let unwind_block = successors[1];
+
+                        
+                        
+                        let num_operands = instr.get_num_operands();
+                        let mut value_operands = Vec::new();
+                        for i in 0..num_operands {
+                            if let Some(val) = get_operand_as_basic_value(i) {
+                                value_operands.push(val);
+                            }
+                        }
+
+                        let callee = value_operands
+                            .pop()
+                            .expect("Invoke callee must be a basic value");
+
+                        let function_name = if let BasicValueEnum::PointerValue(pv) = callee {
+                            pv.get_name().to_str().unwrap_or("unknown_fn").to_string()
+                        } else {
+                            "unknown_fn".to_string()
+                        };
+
+                        let args: Vec<Operand> = value_operands
+                            .into_iter()
+                            .map(|val| {
+                                module_arithmetization_ctx.llvm_basic_value_to_air_operand(val)
+                            })
+                            .collect();
+
+                        let result = if !instr.get_type().is_void_type() {
+                            Some(
+                                module_arithmetization_ctx
+                                    .map_instruction_result_to_new_cs_var(instr),
+                            )
+                        } else {
+                            None
+                        };
+
+                        let return_block_name =
+                            unsafe { CStr::from_ptr(LLVMGetBasicBlockName(normal_block)) }
+                                .to_str()
+                                .unwrap()
+                                .to_string();
+                        let unwind_block_name =
+                            unsafe { CStr::from_ptr(LLVMGetBasicBlockName(unwind_block)) }
+                                .to_str()
+                                .unwrap()
+                                .to_string();
+
+                        let csp_c = module_arithmetization_ctx.csp.expect("CSP not initialized");
+                        let fp_c = module_arithmetization_ctx.fp.expect("FP not initialized");
+
+                        
+                        module_arithmetization_ctx.add_memory_log_entry(MemoryAccessLogEntry {
+                            address: Operand::Var(csp_c),
+                            value: Operand::Var(fp_c),
+                            time_step,
+                            access_type: MemoryAccessType::Write,
+                            bitwidth: 64, 
+                            block_name: current_block_name.clone(),
+                        });
+
+                        
+                        let addr_of_ret_addr = module_arithmetization_ctx.new_cs_variable();
+                        module_arithmetization_ctx.add_structured_constraint(
+                            StructuredAirConstraint::ReturnAddress(ReturnAddress {
+                                operand1: Operand::Var(csp_c),
+                                operand2: Operand::Const(1),
+                                result: addr_of_ret_addr,
+                                block_name: current_block_name.clone(),
+                            }),
+                        );
+
+                        
+                        module_arithmetization_ctx.add_memory_log_entry(MemoryAccessLogEntry {
+                            address: Operand::Var(addr_of_ret_addr),
+                            value: Operand::Const(0), 
+                            time_step,
+                            access_type: MemoryAccessType::Write,
+                            bitwidth: 64,
+                            block_name: current_block_name.clone(),
+                        });
+
+                        
+                        let new_fp = module_arithmetization_ctx.new_cs_variable();
+                        module_arithmetization_ctx.add_structured_constraint(
+                            StructuredAirConstraint::Assign(Assign {
+                                dest: new_fp,
+                                src: Operand::Var(csp_c),
+                            }),
+                        );
+
+                        
+                        let new_csp = module_arithmetization_ctx.new_cs_variable();
+                        module_arithmetization_ctx.add_structured_constraint(
+                            StructuredAirConstraint::ReturnAddress(ReturnAddress {
+                                operand1: Operand::Var(csp_c),
+                                operand2: Operand::Const(2), 
+                                result: new_csp,
+                                block_name: current_block_name.clone(),
+                            }),
+                        );
+
+                        module_arithmetization_ctx.csp = Some(new_csp);
+                        module_arithmetization_ctx.fp = Some(new_fp);
+                        println!("function_name: {}", function_name);
+                        println!("args: {:?}", args);
+                        println!("result: {:?}", result);
+                        println!("return_block_name: {}", return_block_name);
+                        println!("unwind_block_name: {}", unwind_block_name);
+
+                        let sc = StructuredAirConstraint::Invoke(Invoke {
+                            function_name,
+                            args,
+                            result,
+                            block_name: current_block_name,
+                            return_block_name,
+                            unwind_block_name,
+                            time_step,
+                        });
+                        module_arithmetization_ctx.add_structured_constraint(sc);
+                    }
+                    InstructionOpcode::Call => {
+                        let call_site: CallSiteValue = instr.try_into().unwrap();
+                        let called_fn = call_site.get_called_fn_value().unwrap();
+                        let function_name = called_fn.get_name().to_str().unwrap().to_string();
+                        println!("function_name: {}", function_name);
+                        let args: Vec<Operand> = (0..instr.get_num_operands() - 1)
+                            .map(|i| {
+                                let operand_val = instr.get_operand(i).unwrap().left().unwrap();
+                                module_arithmetization_ctx
+                                    .llvm_basic_value_to_air_operand(operand_val)
+                            })
+                            .collect();
+                        println!("args: {:?}", args);
+                        let result = if call_site.try_as_basic_value().is_left() {
+                            Some(
+                                module_arithmetization_ctx
+                                    .map_instruction_result_to_new_cs_var(instr),
+                            )
+                        } else {
+                            None
+                        };
+                        println!("result: {:?}", result);
+                        let time_step = module_arithmetization_ctx.new_time_step_variable();
+
+                        let csp_c = module_arithmetization_ctx.csp.expect("CSP not initialized");
+                        let fp_c = module_arithmetization_ctx.fp.expect("FP not initialized");
+
+                        
+                        module_arithmetization_ctx.add_memory_log_entry(MemoryAccessLogEntry {
+                            address: Operand::Var(csp_c),
+                            value: Operand::Var(fp_c),
+                            time_step,
+                            access_type: MemoryAccessType::Write,
+                            bitwidth: 64, 
+                            block_name: current_block_name.clone(),
+                        });
+
+                        
+                        let addr_of_ret_addr = module_arithmetization_ctx.new_cs_variable();
+                        module_arithmetization_ctx.add_structured_constraint(
+                            StructuredAirConstraint::ReturnAddress(ReturnAddress {
+                                operand1: Operand::Var(csp_c),
+                                operand2: Operand::Const(1),
+                                result: addr_of_ret_addr,
+                                block_name: current_block_name.clone(),
+                            }),
+                        );
+                        module_arithmetization_ctx.add_memory_log_entry(MemoryAccessLogEntry {
+                            address: Operand::Var(addr_of_ret_addr),
+                            value: Operand::Const(0), 
+                            time_step,
+                            access_type: MemoryAccessType::Write,
+                            bitwidth: 64,
+                            block_name: current_block_name.clone(),
+                        });
+
+                        
+                        let new_fp = module_arithmetization_ctx.new_cs_variable();
+                        module_arithmetization_ctx.add_structured_constraint(
+                            StructuredAirConstraint::Assign(Assign {
+                                dest: new_fp,
+                                src: Operand::Var(csp_c),
+                            }),
+                        );
+
+                        
+                        let new_csp = module_arithmetization_ctx.new_cs_variable();
+                        module_arithmetization_ctx.add_structured_constraint(
+                            StructuredAirConstraint::ReturnAddress(ReturnAddress {
+                                operand1: Operand::Var(csp_c),
+                                operand2: Operand::Const(2), 
+                                result: new_csp,
+                                block_name: current_block_name.clone(),
+                            }),
+                        );
+
+                        module_arithmetization_ctx.csp = Some(new_csp);
+                        module_arithmetization_ctx.fp = Some(new_fp);
+
+                        let sc = StructuredAirConstraint::Call(Call {
+                            function_name,
+                            args,
+                            result,
+                            block_name: current_block_name,
+                            time_step,
+                        });
+                        module_arithmetization_ctx.add_structured_constraint(sc);
+                    }
+                    InstructionOpcode::CallBr => {
+                        let num_operands = instr.get_num_operands();
+
+                        
+                        
+                        let callee_operand_idx = num_operands - 1;
+                        let called_fn_operand = get_operand_as_basic_value(callee_operand_idx)
+                            .expect("CallBr callee is not a basic value");
+                        let function_name =
+                            if let BasicValueEnum::PointerValue(pv) = called_fn_operand {
+                                pv.get_name().to_str().unwrap().to_string()
+                            } else {
+                                panic!("Callee is not a pointer value");
+                            };
+
+                        
+                        let mut dest_block_count = 0;
+                        for i in 0..num_operands {
+                            if instr.get_operand(i).unwrap().is_right() {
+                                dest_block_count += 1;
+                            } else {
+                                
+                                break;
+                            }
+                        }
+
+                        if dest_block_count == 0 {
+                            panic!("CallBr must have at least one destination block");
+                        }
+
+                        
+                        let fallthrough_block_name = get_operand_as_basic_block(0)
+                            .expect("CallBr must have a fallthrough basic block")
+                            .get_name()
+                            .to_str()
+                            .unwrap()
+                            .to_string();
+
+                        let mut other_block_names = Vec::new();
+                        for i in 1..dest_block_count {
+                            let block = get_operand_as_basic_block(i)
+                                .expect("CallBr indirect dest must be a basic block")
+                                .get_name()
+                                .to_str()
+                                .unwrap()
+                                .to_string();
+                            other_block_names.push(block);
+                        }
+
+                        
+                        let args: Vec<Operand> = (dest_block_count..callee_operand_idx)
+                            .map(|i| {
+                                let operand_val = get_operand_as_basic_value(i)
+                                    .expect("CallBr argument is not a basic value");
+                                module_arithmetization_ctx
+                                    .llvm_basic_value_to_air_operand(operand_val)
+                            })
+                            .collect();
+
+                        let result = if !instr.get_type().is_void_type() {
+                            Some(
+                                module_arithmetization_ctx
+                                    .map_instruction_result_to_new_cs_var(instr),
+                            )
+                        } else {
+                            None
+                        };
+
+                        let time_step = module_arithmetization_ctx.new_time_step_variable();
+
+                        let csp_c = module_arithmetization_ctx.csp.expect("CSP not initialized");
+                        let fp_c = module_arithmetization_ctx.fp.expect("FP not initialized");
+
+                        
+                        module_arithmetization_ctx.add_memory_log_entry(MemoryAccessLogEntry {
+                            address: Operand::Var(csp_c),
+                            value: Operand::Var(fp_c),
+                            time_step,
+                            access_type: MemoryAccessType::Write,
+                            bitwidth: 64, 
+                            block_name: current_block_name.clone(),
+                        });
+
+                        
+                        let addr_of_ret_addr = module_arithmetization_ctx.new_cs_variable();
+                        module_arithmetization_ctx.add_structured_constraint(
+                            StructuredAirConstraint::ReturnAddress(ReturnAddress {
+                                operand1: Operand::Var(csp_c),
+                                operand2: Operand::Const(1),
+                                result: addr_of_ret_addr,
+                                block_name: current_block_name.clone(),
+                            }),
+                        );
+                        module_arithmetization_ctx.add_memory_log_entry(MemoryAccessLogEntry {
+                            address: Operand::Var(addr_of_ret_addr),
+                            value: Operand::Const(0), 
+                            time_step,
+                            access_type: MemoryAccessType::Write,
+                            bitwidth: 64,
+                            block_name: current_block_name.clone(),
+                        });
+
+                        
+                        let new_fp = module_arithmetization_ctx.new_cs_variable();
+                        module_arithmetization_ctx.add_structured_constraint(
+                            StructuredAirConstraint::Assign(Assign {
+                                dest: new_fp,
+                                src: Operand::Var(csp_c),
+                            }),
+                        );
+
+                        
+                        let new_csp = module_arithmetization_ctx.new_cs_variable();
+                        module_arithmetization_ctx.add_structured_constraint(
+                            StructuredAirConstraint::ReturnAddress(ReturnAddress {
+                                operand1: Operand::Var(csp_c),
+                                operand2: Operand::Const(2), 
+                                result: new_csp,
+                                block_name: current_block_name.clone(),
+                            }),
+                        );
+
+                        module_arithmetization_ctx.csp = Some(new_csp);
+                        module_arithmetization_ctx.fp = Some(new_fp);
+
+                        let sc = StructuredAirConstraint::CallBr(CallBr {
+                            function_name,
+                            args,
+                            result,
+                            fallthrough_block_name,
+                            other_block_names,
+                            block_name: current_block_name,
+                            time_step,
+                        });
+                        module_arithmetization_ctx.add_structured_constraint(sc);
+                    }
+                    InstructionOpcode::AtomicCmpXchg => {
+                        let ptr_operand = get_operand_as_basic_value(0).expect("cmpxchg ptr");
+                        let cmp_operand = get_operand_as_basic_value(1).expect("cmpxchg cmp");
+                        let new_operand = get_operand_as_basic_value(2).expect("cmpxchg new");
+
+                        let bitwidth = match new_operand.get_type() {
+                            BasicTypeEnum::IntType(it) => it.get_bit_width(),
+                            _ => panic!("cmpxchg new value must be an integer type"),
+                        };
+
+                        let ptr_air =
+                            module_arithmetization_ctx.llvm_basic_value_to_air_operand(ptr_operand);
+                        let cmp_air =
+                            module_arithmetization_ctx.llvm_basic_value_to_air_operand(cmp_operand);
+                        let new_air =
+                            module_arithmetization_ctx.llvm_basic_value_to_air_operand(new_operand);
+
+                        let result_val_var = module_arithmetization_ctx.new_cs_variable();
+                        let result_success_var = module_arithmetization_ctx.new_cs_variable();
+
+                        module_arithmetization_ctx
+                            .cmpxchg_results
+                            .insert(instr, (result_val_var, result_success_var));
+
+                        let time_step = module_arithmetization_ctx.new_time_step_variable();
+
+                        
+                        
+                        
+                        module_arithmetization_ctx.add_memory_log_entry(MemoryAccessLogEntry {
+                            address: ptr_air,
+                            value: Operand::Var(result_val_var),
+                            time_step,
+                            access_type: MemoryAccessType::Read,
+                            bitwidth,
+                            block_name: current_block_name.clone(),
+                        });
+
+                        
+                        
+                        let written_val_var = module_arithmetization_ctx.new_cs_variable();
+                        module_arithmetization_ctx.add_memory_log_entry(MemoryAccessLogEntry {
+                            address: ptr_air,
+                            value: Operand::Var(written_val_var),
+                            time_step,
+                            access_type: MemoryAccessType::Write,
+                            bitwidth,
+                            block_name: current_block_name.clone(),
+                        });
+
+                        let sc = StructuredAirConstraint::AtomicCmpXchg(AtomicCmpXchg {
+                            ptr: ptr_air,
+                            cmp: cmp_air,
+                            new: new_air,
+                            result_val: result_val_var,
+                            result_success: result_success_var,
+                            block_name: current_block_name,
+                            time_step,
+                        });
+                        module_arithmetization_ctx.add_structured_constraint(sc);
+                    }
+                    InstructionOpcode::AtomicRMW => {
+                        let ptr_operand = get_operand_as_basic_value(0).expect("rmw ptr");
+                        let val_operand = get_operand_as_basic_value(1).expect("rmw val");
+                        let operation = AtomicRMWBinOp::from(unsafe {
+                            LLVMGetAtomicRMWBinOp(instr.as_value_ref())
+                        });
+
+                        let bitwidth = match val_operand.get_type() {
+                            BasicTypeEnum::IntType(it) => it.get_bit_width(),
+                            _ => panic!("atomicrmw value must be an integer type"),
+                        };
+
+                        let ptr_air =
+                            module_arithmetization_ctx.llvm_basic_value_to_air_operand(ptr_operand);
+                        let val_air =
+                            module_arithmetization_ctx.llvm_basic_value_to_air_operand(val_operand);
+
+                        let result_var =
+                            module_arithmetization_ctx.map_instruction_result_to_new_cs_var(instr);
+                        let time_step = module_arithmetization_ctx.new_time_step_variable();
+
+                        
+                        
+                        module_arithmetization_ctx.add_memory_log_entry(MemoryAccessLogEntry {
+                            address: ptr_air,
+                            value: Operand::Var(result_var),
+                            time_step,
+                            access_type: MemoryAccessType::Read,
+                            bitwidth,
+                            block_name: current_block_name.clone(),
+                        });
+
+                        
+                        
+                        let written_val_var = module_arithmetization_ctx.new_cs_variable();
+                        module_arithmetization_ctx.add_memory_log_entry(MemoryAccessLogEntry {
+                            address: ptr_air,
+                            value: Operand::Var(written_val_var),
+                            time_step,
+                            access_type: MemoryAccessType::Write,
+                            bitwidth,
+                            block_name: current_block_name.clone(),
+                        });
+
+                        let sc = StructuredAirConstraint::AtomicRMW(AtomicRMW {
+                            ptr: ptr_air,
+                            value: val_air,
+                            operation: operation.into(),
+                            result: result_var,
+                            block_name: current_block_name,
+                            time_step,
+                        });
+                        module_arithmetization_ctx.add_structured_constraint(sc);
+                    }
+                    InstructionOpcode::ExtractValue => {
+                        let aggregate_any_value = instr
+                            .get_operand(0)
+                            .unwrap()
+                            .left()
+                            .unwrap()
+                            .as_any_value_enum();
+                        let index = instr
+                            .get_operand(1)
+                            .unwrap()
+                            .left()
+                            .unwrap()
+                            .into_int_value()
+                            .get_zero_extended_constant()
+                            .unwrap() as u32;
+
+                        if let AnyValueEnum::InstructionValue(aggregate_instr) = aggregate_any_value
+                        {
+                            let (val_var, success_var) = *module_arithmetization_ctx
+                                .cmpxchg_results
+                                .get(&aggregate_instr)
+                                .expect("cmpxchg result not found");
+
+                            let result_var = module_arithmetization_ctx
+                                .map_instruction_result_to_new_cs_var(instr);
+
+                            let source_var = if index == 0 { val_var } else { success_var };
+
+                            let sc = StructuredAirConstraint::Assign(Assign {
+                                dest: result_var,
+                                src: Operand::Var(source_var),
+                            });
+                            module_arithmetization_ctx.add_structured_constraint(sc);
+                        } else {
+                            panic!("extractvalue aggregate must be an instruction");
+                        }
+                    }
                     _ => {
                         if !matches!(instr.get_type(), AnyTypeEnum::VoidType(_)) {
                             let _ = module_arithmetization_ctx
@@ -1652,9 +2428,18 @@ mod tests {
         "#;
         match process_llvm_ir(llvm_ir) {
             Ok((processed_constraints, memory_log)) => {
-                assert_eq!(processed_constraints.len(), 2);
-                assert_eq!(memory_log.len(), 1);
-                assert_eq!(memory_log[0].access_type, MemoryAccessType::Write);
+                
+                assert_eq!(processed_constraints.len(), 6);
+                
+                assert_eq!(memory_log.len(), 3);
+                
+                assert_eq!(
+                    memory_log
+                        .iter()
+                        .filter(|&l| l.access_type == MemoryAccessType::Write)
+                        .count(),
+                    1
+                );
             }
             Err(e) => panic!("Store IR processing failed: {}", e),
         }
@@ -1672,8 +2457,10 @@ mod tests {
         "#;
         match process_llvm_ir(llvm_ir) {
             Ok((processed_constraints, memory_log)) => {
-                assert_eq!(processed_constraints.len(), 2);
-                assert_eq!(memory_log.len(), 2);
+                
+                assert_eq!(processed_constraints.len(), 6);
+                
+                assert_eq!(memory_log.len(), 4);
             }
             Err(e) => panic!("Load IR processing failed: {}", e),
         }
@@ -1713,7 +2500,7 @@ mod tests {
         "#;
         match process_llvm_ir(llvm_ir) {
             Ok((processed_constraints, _memory_log)) => {
-                assert_eq!(processed_constraints.len(), 2);
+                assert_eq!(processed_constraints.len(), 5);
                 if let StructuredAirConstraint::SRem { .. } = processed_constraints[0] {
                 } else {
                     panic!(
@@ -1736,7 +2523,7 @@ mod tests {
         "#;
         match process_llvm_ir(llvm_ir) {
             Ok((processed_constraints, _memory_log)) => {
-                assert_eq!(processed_constraints.len(), 2);
+                assert_eq!(processed_constraints.len(), 5);
                 if let StructuredAirConstraint::URem { .. } = processed_constraints[0] {
                 } else {
                     panic!(
@@ -1747,5 +2534,405 @@ mod tests {
             }
             Err(e) => panic!("URem IR processing failed: {}", e),
         }
+    }
+
+    #[test]
+    fn call_instruction_ir_processing() {
+        let llvm_ir = r#"
+        define i32 @add(i32 %a, i32 %b) {
+            %1 = add i32 %a, %b
+            ret i32 %1
+        }
+
+        define i32 @main() {
+            %1 = call i32 @add(i32 5, i32 10)
+            ret i32 %1
+        }
+        "#;
+
+        match process_llvm_ir(llvm_ir) {
+            Ok((processed_constraints, memory_log)) => {
+                
+                
+                
+                
+                
+                
+                
+                assert_eq!(processed_constraints.len(), 13);
+
+                
+                
+                
+                
+                assert_eq!(memory_log.len(), 6);
+
+                let call_constraint = processed_constraints
+                    .iter()
+                    .find(|c| matches!(c, StructuredAirConstraint::Call(_)));
+                assert!(call_constraint.is_some());
+
+                
+                let call_writes = memory_log
+                    .iter()
+                    .filter(|e| e.access_type == MemoryAccessType::Write)
+                    .count();
+                assert_eq!(call_writes, 2);
+            }
+            Err(e) => panic!("Call IR processing failed: {}", e),
+        }
+    }
+
+    #[test]
+    fn multiple_function_calls_ir_processing() {
+        let llvm_ir = r#"
+        define i32 @add(i32 %a, i32 %b) {
+            %result = add i32 %a, %b
+            ret i32 %result
+        }
+
+        define i32 @call_add(i32 %x) {
+            %result = call i32 @add(i32 %x, i32 5)
+            ret i32 %result
+        }
+
+        define i32 @main() {
+            %result = call i32 @call_add(i32 10)
+            ret i32 %result
+        }
+        "#;
+
+        match process_llvm_ir(llvm_ir) {
+            Ok((processed_constraints, memory_log)) => {
+                
+                
+                
+                
+                assert_eq!(processed_constraints.len(), 21);
+
+                
+                
+                
+                
+                
+                
+                assert_eq!(memory_log.len(), 10);
+
+                let call_constraints_count = processed_constraints
+                    .iter()
+                    .filter(|c| matches!(c, StructuredAirConstraint::Call(_)))
+                    .count();
+                assert_eq!(call_constraints_count, 2);
+
+                let write_count = memory_log
+                    .iter()
+                    .filter(|e| e.access_type == MemoryAccessType::Write)
+                    .count();
+                assert_eq!(write_count, 4);
+
+                let read_count = memory_log
+                    .iter()
+                    .filter(|e| e.access_type == MemoryAccessType::Read)
+                    .count();
+                assert_eq!(read_count, 6);
+            }
+            Err(e) => panic!("Multiple function calls IR processing failed: {}", e),
+        }
+    }
+
+    #[test]
+    fn recursive_function_ir_processing() {
+        let ir = r#"
+            define i32 @factorial(i32 %n) {
+            entry:
+                %cmp = icmp eq i32 %n, 0
+                br i1 %cmp, label %if.then, label %if.else
+
+            if.then:
+                ret i32 1
+
+            if.else:
+                %sub = sub i32 %n, 1
+                %call = call i32 @factorial(i32 %sub)
+                %mul = mul i32 %n, %call
+                ret i32 %mul
+            }
+        "#;
+
+        let (constraints, memory_log) = process_llvm_ir(ir).unwrap();
+
+        
+        assert!(!constraints.is_empty());
+
+        
+        assert!(!memory_log.is_empty());
+
+        
+        let has_return_address = constraints
+            .iter()
+            .any(|c| matches!(c, StructuredAirConstraint::ReturnAddress(_)));
+        assert!(has_return_address);
+
+        
+        let has_call = constraints
+            .iter()
+            .any(|c| matches!(c, StructuredAirConstraint::Call(_)));
+        assert!(has_call);
+    }
+
+    #[test]
+    fn callbr_instruction_ir_processing() {
+        let llvm_ir = r#"
+            define i32 @get_num() {
+                ret i32 42
+            }
+
+            define i32 @main() {
+            entry:
+                %val = callbr i32 @get_num() to label %normal [label %error]
+
+            normal:
+                ret i32 %val
+
+            error:
+                ret i32 -1
+            }
+        "#;
+
+        let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
+
+        assert!(!constraints.is_empty(), "Constraints should be generated");
+        assert!(
+            !memory_log.is_empty(),
+            "Memory log should contain call stack operations"
+        );
+
+        let callbr_constraint = constraints.iter().find_map(|c| match c {
+            StructuredAirConstraint::CallBr(callbr) => Some(callbr),
+            _ => None,
+        });
+
+        assert!(
+            callbr_constraint.is_some(),
+            "No CallBr constraint was generated"
+        );
+
+        let callbr = callbr_constraint.unwrap();
+        assert_eq!(callbr.function_name, "get_num");
+        assert!(callbr.result.is_some(), "CallBr should have a result value");
+        assert_eq!(callbr.fallthrough_block_name, "normal");
+        assert_eq!(callbr.other_block_names, vec!["error"]);
+
+        let write_count = memory_log
+            .iter()
+            .filter(|e| e.access_type == MemoryAccessType::Write)
+            .count();
+        assert_eq!(write_count, 2, "Should be two writes for the call frame");
+    }
+
+    #[test]
+    fn atomic_rmw_ir_processing() {
+        let llvm_ir = r#"
+            define i32 @atomic_add(i32* %ptr, i32 %val) {
+            entry:
+                %res = atomicrmw add i32* %ptr, i32 %val monotonic
+                ret i32 %res
+            }
+        "#;
+
+        let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
+
+        assert_eq!(
+            memory_log.len(),
+            4,
+            "Should have read/write for RMW and stack ops for ret"
+        );
+
+        let rmw_read = memory_log
+            .iter()
+            .find(|e| e.access_type == MemoryAccessType::Read && e.block_name == "entry");
+        assert!(rmw_read.is_some(), "No read operation found for atomicrmw");
+
+        let rmw_write = memory_log
+            .iter()
+            .find(|e| e.access_type == MemoryAccessType::Write && e.block_name == "entry");
+        assert!(
+            rmw_write.is_some(),
+            "No write operation found for atomicrmw"
+        );
+
+        let rmw_constraint = constraints.iter().find_map(|c| match c {
+            StructuredAirConstraint::AtomicRMW(rmw) => Some(rmw),
+            _ => None,
+        });
+        assert!(
+            rmw_constraint.is_some(),
+            "No AtomicRMW constraint was generated"
+        );
+    }
+
+    #[test]
+    fn atomic_cmpxchg_ir_processing() {
+        let llvm_ir = r#"
+            define { i32, i1 } @atomic_cmpxchg(i32* %ptr, i32 %cmp, i32 %new) {
+            entry:
+                %res = cmpxchg i32* %ptr, i32 %cmp, i32 %new monotonic monotonic
+                ret { i32, i1 } %res
+            }
+        "#;
+
+        let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
+        
+        assert_eq!(memory_log.len(), 4);
+
+        let cmpxchg_constraint = constraints.iter().find_map(|c| match c {
+            StructuredAirConstraint::AtomicCmpXchg(cx) => Some(cx),
+            _ => None,
+        });
+        assert!(
+            cmpxchg_constraint.is_some(),
+            "No AtomicCmpXchg constraint was generated"
+        );
+
+        
+        let assign_constraint = constraints
+            .iter()
+            .find(|c| matches!(c, StructuredAirConstraint::Assign(_)));
+        assert!(
+            assign_constraint.is_some(),
+            "No Assign constraint for extractvalue from cmpxchg"
+        );
+    }
+
+    #[test]
+    fn addrspacecast_ir_processing() {
+        let llvm_ir = r#"
+        define i32* @cast(i32 addrspace(1)* %ptr) {
+        entry:
+            %casted_ptr = addrspacecast i32 addrspace(1)* %ptr to i32*
+            ret i32* %casted_ptr
+        }
+    "#;
+        let (constraints, _memory_log) = process_llvm_ir(llvm_ir).unwrap();
+
+        
+        assert_eq!(constraints.len(), 5);
+
+        let assign_constraint = constraints.iter().find_map(|c| match c {
+            StructuredAirConstraint::Assign(assign) => Some(assign),
+            _ => None,
+        });
+        assert!(
+            assign_constraint.is_some(),
+            "No Assign constraint was generated for addrspacecast"
+        );
+    }
+
+    #[test]
+    fn bitcast_ir_processing() {
+        let llvm_ir = r#"
+        define float @cast(i32 %val) {
+        entry:
+            %casted_val = bitcast i32 %val to float
+            ret float %casted_val
+        }
+    "#;
+        let (constraints, _memory_log) = process_llvm_ir(llvm_ir).unwrap();
+
+        
+        assert_eq!(constraints.len(), 5);
+
+        let assign_constraint = constraints.iter().find_map(|c| match c {
+            StructuredAirConstraint::Assign(assign) => Some(assign),
+            _ => None,
+        });
+        assert!(
+            assign_constraint.is_some(),
+            "No Assign constraint was generated for bitcast"
+        );
+    }
+    #[test]
+    fn ptrtoint_ir_processing() {
+        let llvm_ir = r#"
+        define i64 @cast(i32* %ptr) {
+        entry:
+            %casted_val = ptrtoint i32* %ptr to i64
+            ret i64 %casted_val
+        }
+    "#;
+        let (constraints, _memory_log) = process_llvm_ir(llvm_ir).unwrap();
+
+        
+        assert_eq!(constraints.len(), 5);
+
+        let assign_constraint = constraints.iter().find_map(|c| match c {
+            StructuredAirConstraint::Assign(assign) => Some(assign),
+            _ => None,
+        });
+        assert!(
+            assign_constraint.is_some(),
+            "No Assign constraint was generated for ptrtoint"
+        );
+    }
+
+    #[test]
+    fn inttoptr_ir_processing() {
+        let llvm_ir = r#"
+        define i32* @cast(i64 %int) {
+        entry:
+            %casted_val = inttoptr i64 %int to i32*
+            ret i32* %casted_val
+        }
+    "#;
+        let (constraints, _memory_log) = process_llvm_ir(llvm_ir).unwrap();
+
+        
+        assert_eq!(constraints.len(), 5);
+
+        let assign_constraint = constraints.iter().find_map(|c| match c {
+            StructuredAirConstraint::Assign(assign) => Some(assign),
+            _ => None,
+        });
+        assert!(
+            assign_constraint.is_some(),
+            "No Assign constraint was generated for inttoptr"
+        );
+    }
+    #[test]
+    fn cleanup_pad_ret_ir_processing() {
+        let llvm_ir = r#"
+            declare void @do_stuff()
+
+            define void @cleanup_test() {
+            entry:
+                invoke void @do_stuff() to label %normal unwind label %cleanup_block
+
+            cleanup_block:
+                %cp = cleanuppad within none []
+                cleanupret from %cp unwind to caller
+
+            normal:
+                ret void
+            }
+        "#;
+        let (constraints, _memory_log) = process_llvm_ir(llvm_ir).unwrap();
+
+        let pad_constraint = constraints.iter().find_map(|c| match c {
+            StructuredAirConstraint::CleanupPad(cp) => Some(cp),
+            _ => None,
+        });
+        assert!(
+            pad_constraint.is_some(),
+            "No CleanupPad constraint generated"
+        );
+
+        let ret_constraint = constraints.iter().find_map(|c| match c {
+            StructuredAirConstraint::CleanupRet(cr) => Some(cr),
+            _ => None,
+        });
+        assert!(
+            ret_constraint.is_some(),
+            "No CleanupRet constraint generated"
+        );
     }
 }
