@@ -1023,12 +1023,26 @@ pub trait Field {
     }
 
     fn get_nth_root_of_unity(&self, n: usize) -> Unity;
+
+    fn get_root_of_unity(n: u128) -> u128 {
+        const GENERATOR: u128 = 3;
+        mod_pow(GENERATOR, (Self::PRIME - 1) / n, Self::PRIME)
+    }
 }
 
 fn ntt_1d_iterative<FieldType>(coeffs: &Vec<u128>, unity: Unity) -> Vec<u128>
 where
     FieldType: Field,
 {
+    #[cfg(feature = "gpu")]
+    {
+        if let Some(executor) = gpu::GpuNttExecutor::new::<FieldType>(coeffs.len()) {
+            let mut result = coeffs.clone();
+            executor.ntt_internal(&mut result, false);
+            return result;
+        }
+    }
+
     let n = coeffs.len();
     if n == 1 {
         return coeffs.to_vec();
@@ -1061,7 +1075,6 @@ where
             omega_power = (omega_power * omega_m) % FieldType::PRIME;
         }
     }
-
     result
 }
 
@@ -1092,6 +1105,15 @@ fn intt_1d<FieldType>(coeffs: &Vec<u128>, unity: Unity) -> Vec<u128>
 where
     FieldType: Field,
 {
+    #[cfg(feature = "gpu")]
+    {
+        if let Some(executor) = gpu::GpuNttExecutor::new::<FieldType>(coeffs.len()) {
+            let mut result = coeffs.clone();
+            executor.ntt_internal(&mut result, true);
+            return result;
+        }
+    }
+
     let n = coeffs.len();
     if n == 1 {
         return coeffs.to_vec();
@@ -1149,4 +1171,212 @@ pub struct StarkProof {
     alpha: u128,
     queried_trace_openings: Vec<MerkleOpening>,
     queried_constraint_openings: Vec<MerkleOpening>,
+}
+
+#[cfg(feature = "gpu")]
+pub mod gpu {
+    use super::Field;
+    use std::ffi::{c_uint, c_ulonglong, c_void};
+
+    mod ffi {
+        use super::*;
+
+        pub struct GpuNttTables {}
+        pub struct GpuNttTablesInt {}
+        pub struct GpuNttTablesU128 {}
+
+        #[repr(C)]
+        pub enum CudaMemcpyKind {
+            HostToHost = 0,
+            HostToDevice = 1,
+            DeviceToHost = 2,
+            DeviceToDevice = 3,
+            Default = 4,
+        }
+
+        #[link(name = "ntt_gpu_stark", kind = "static")]
+        unsafe extern "C" {
+
+            pub fn cudaMalloc(devPtr: *mut *mut c_void, size: usize) -> c_uint;
+            pub fn cudaMemcpy(
+                dst: *mut c_void,
+                src: *const c_void,
+                count: usize,
+                kind: CudaMemcpyKind,
+            ) -> c_uint;
+            pub fn cudaFree(devPtr: *mut c_void) -> c_uint;
+
+            pub fn create_ntt_tables(p: c_uint, w_n: c_uint, n: c_uint) -> *mut GpuNttTables;
+            pub fn destroy_ntt_tables(tables: *mut GpuNttTables);
+            pub fn ntt_gpu(
+                tables: *mut GpuNttTables,
+                data: *mut c_void,
+                batch_size: c_uint,
+                inverse: bool,
+            );
+
+            pub fn create_ntt_tables_int(p: c_uint, w_n: c_uint, n: c_uint)
+            -> *mut GpuNttTablesInt;
+            pub fn destroy_ntt_tables_int(tables: *mut GpuNttTablesInt);
+            pub fn ntt_gpu_int(
+                tables: *mut GpuNttTablesInt,
+                data: *mut c_void,
+                batch_size: c_uint,
+                inverse: bool,
+            );
+
+            pub fn create_ntt_tables_u128(
+                p_lo: c_ulonglong,
+                p_hi: c_ulonglong,
+                w_n_lo: c_ulonglong,
+                w_n_hi: c_ulonglong,
+                n: c_uint,
+            ) -> *mut GpuNttTablesU128;
+            pub fn destroy_ntt_tables_u128(tables: *mut GpuNttTablesU128);
+            pub fn ntt_gpu_u128(
+                tables: *mut GpuNttTablesU128,
+                data: *mut c_void,
+                batch_size: c_uint,
+                inverse: bool,
+            );
+        }
+    }
+
+    enum GpuNttKind {
+        Wmma(*mut ffi::GpuNttTables),
+        Int(*mut ffi::GpuNttTablesInt),
+        U128(*mut ffi::GpuNttTablesU128),
+    }
+
+    pub struct GpuNttExecutor {
+        kind: GpuNttKind,
+    }
+
+    impl GpuNttExecutor {
+        pub fn new<F: Field>(n: usize) -> Option<Self> {
+            let prime = F::PRIME;
+            let w_n = F::get_root_of_unity(n as u128);
+
+            let sqrt_n_f = (n as f64).sqrt();
+            let is_perfect_square = sqrt_n_f == sqrt_n_f.floor();
+
+            if !is_perfect_square {
+                return None;
+            }
+
+            let sqrt_n = sqrt_n_f as usize;
+
+            let kind = if prime < 2048 && sqrt_n % 16 == 0 {
+                let tables =
+                    unsafe { ffi::create_ntt_tables(prime as c_uint, w_n as c_uint, n as c_uint) };
+                if tables.is_null() {
+                    return None;
+                }
+                GpuNttKind::Wmma(tables)
+            } else if prime < u32::MAX as u128 {
+                let tables = unsafe {
+                    ffi::create_ntt_tables_int(prime as c_uint, w_n as c_uint, n as c_uint)
+                };
+                if tables.is_null() {
+                    return None;
+                }
+                GpuNttKind::Int(tables)
+            } else {
+                let p_lo = prime as u64;
+                let p_hi = (prime >> 64) as u64;
+                let w_lo = w_n as u64;
+                let w_hi = (w_n >> 64) as u64;
+                let tables =
+                    unsafe { ffi::create_ntt_tables_u128(p_lo, p_hi, w_lo, w_hi, n as c_uint) };
+                if tables.is_null() {
+                    return None;
+                }
+                GpuNttKind::U128(tables)
+            };
+            Some(Self { kind })
+        }
+
+        pub fn ntt_internal(&self, coeffs: &mut [u128], inverse: bool) {
+            let n = coeffs.len();
+
+            let mut d_data: *mut c_void = std::ptr::null_mut();
+
+            unsafe {
+                match self.kind {
+                    GpuNttKind::Wmma(tables) => {
+                        let mut u32_coeffs: Vec<u32> = coeffs.iter().map(|&x| x as u32).collect();
+                        let total_bytes = n * std::mem::size_of::<u32>();
+                        ffi::cudaMalloc(&mut d_data, total_bytes);
+                        ffi::cudaMemcpy(
+                            d_data,
+                            u32_coeffs.as_mut_ptr() as *mut c_void,
+                            total_bytes,
+                            ffi::CudaMemcpyKind::HostToDevice,
+                        );
+                        ffi::ntt_gpu(tables, d_data, 1, inverse);
+                        ffi::cudaMemcpy(
+                            u32_coeffs.as_mut_ptr() as *mut c_void,
+                            d_data,
+                            total_bytes,
+                            ffi::CudaMemcpyKind::DeviceToHost,
+                        );
+                        for (i, &val) in u32_coeffs.iter().enumerate() {
+                            coeffs[i] = val as u128;
+                        }
+                    }
+                    GpuNttKind::Int(tables) => {
+                        let mut u32_coeffs: Vec<u32> = coeffs.iter().map(|&x| x as u32).collect();
+                        let total_bytes = n * std::mem::size_of::<u32>();
+                        ffi::cudaMalloc(&mut d_data, total_bytes);
+                        ffi::cudaMemcpy(
+                            d_data,
+                            u32_coeffs.as_mut_ptr() as *mut c_void,
+                            total_bytes,
+                            ffi::CudaMemcpyKind::HostToDevice,
+                        );
+                        ffi::ntt_gpu_int(tables, d_data, 1, inverse);
+                        ffi::cudaMemcpy(
+                            u32_coeffs.as_mut_ptr() as *mut c_void,
+                            d_data,
+                            total_bytes,
+                            ffi::CudaMemcpyKind::DeviceToHost,
+                        );
+                        for (i, &val) in u32_coeffs.iter().enumerate() {
+                            coeffs[i] = val as u128;
+                        }
+                    }
+                    GpuNttKind::U128(tables) => {
+                        let total_bytes = n * std::mem::size_of::<u128>();
+                        ffi::cudaMalloc(&mut d_data, total_bytes);
+                        ffi::cudaMemcpy(
+                            d_data,
+                            coeffs.as_mut_ptr() as *mut c_void,
+                            total_bytes,
+                            ffi::CudaMemcpyKind::HostToDevice,
+                        );
+                        ffi::ntt_gpu_u128(tables, d_data, 1, inverse);
+                        ffi::cudaMemcpy(
+                            coeffs.as_mut_ptr() as *mut c_void,
+                            d_data,
+                            total_bytes,
+                            ffi::CudaMemcpyKind::DeviceToHost,
+                        );
+                    }
+                }
+                ffi::cudaFree(d_data);
+            }
+        }
+    }
+
+    impl Drop for GpuNttExecutor {
+        fn drop(&mut self) {
+            unsafe {
+                match self.kind {
+                    GpuNttKind::Wmma(tables) => ffi::destroy_ntt_tables(tables),
+                    GpuNttKind::Int(tables) => ffi::destroy_ntt_tables_int(tables),
+                    GpuNttKind::U128(tables) => ffi::destroy_ntt_tables_u128(tables),
+                }
+            }
+        }
+    }
 }

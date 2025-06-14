@@ -6,9 +6,9 @@ use crate::{ConstraintSystemVariable, Operand};
 pub struct CallFrame {
     pub function_name: String,
     pub return_to_block: String,
-    
+
     pub param_to_arg_map: HashMap<ConstraintSystemVariable, Operand>,
-    
+
     pub return_value_dest: Option<ConstraintSystemVariable>,
 }
 

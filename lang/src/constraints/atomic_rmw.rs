@@ -71,17 +71,13 @@ impl ResolveConstraint for AtomicRMW {
             AirExpression::Trace(AirTraceVariable(self.result.0), RowOffset::Current);
         let arg_val_expr = lang_operand_to_air_expression(self.value);
 
-        
         let new_val_expr = match self.operation {
             RmwBinOp::Add => old_val_expr + arg_val_expr,
             RmwBinOp::Sub => old_val_expr - arg_val_expr,
-            
-            
-            _ => lang_operand_to_air_expression(self.value), 
+
+            _ => lang_operand_to_air_expression(self.value),
         };
 
-        
-        
         let written_val_var = ctx.new_aux_variable();
         let written_val_expr = AirExpression::Trace(written_val_var, RowOffset::Current);
         constraints.push(written_val_expr - new_val_expr);

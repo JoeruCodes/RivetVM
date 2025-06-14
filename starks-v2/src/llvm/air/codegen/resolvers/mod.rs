@@ -265,9 +265,7 @@ impl AirCodegen {
                         switch_instructions,
                     );
                 }
-                StructuredAirConstraint::Alloca { .. } => {
-                    
-                }
+                StructuredAirConstraint::Alloca { .. } => {}
                 StructuredAirConstraint::Switch(r) => {
                     r.resolve(
                         &mut air_constraints,
@@ -364,9 +362,7 @@ impl AirCodegen {
                         switch_instructions,
                     );
                 }
-                StructuredAirConstraint::ExtractValue { .. } => {
-                    
-                }
+                StructuredAirConstraint::ExtractValue { .. } => {}
             }
         }
 

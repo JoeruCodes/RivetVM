@@ -3,6 +3,9 @@ name = "starks-v2"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+gpu = []
+
 [dependencies]
 sha2 = {workspace = true}
 lang = { path = "../lang" }
@@ -13,3 +16,6 @@ lang = { path = "../lang" }
 
 # Example of adding a specific version of a crate for dev only
 # criterion = "0.3"
+
+[build-dependencies]
+cc = "1.0.91"

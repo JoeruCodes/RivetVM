@@ -35,8 +35,6 @@ impl ResolveConstraint for Call {
             param_to_arg_map.insert(*param_var, *arg_op);
         }
 
-        
-        
         let return_to_block = self.block_name.clone();
 
         let frame = CallFrame {
@@ -48,7 +46,6 @@ impl ResolveConstraint for Call {
 
         ctx.call_stack.push(frame);
 
-        
         let target_block_name = function_data
             .entry_block
             .clone()
