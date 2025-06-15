@@ -23,6 +23,9 @@ impl AirCodegen {
                 StructuredAirConstraint::CatchSwitch(_) => {}
                 StructuredAirConstraint::CleanupPad(_) => {}
                 StructuredAirConstraint::CleanupRet(_) => {}
+                StructuredAirConstraint::IndirectBr(_) => {}
+                StructuredAirConstraint::LandingPad(_) => {}
+                StructuredAirConstraint::Resume(_) => {}
                 StructuredAirConstraint::ReturnAddress(v) => {
                     v.resolve(
                         &mut air_constraints,

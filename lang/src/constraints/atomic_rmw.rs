@@ -12,7 +12,7 @@ use crate::{
     StructuredAirConstraint,
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RmwBinOp {
     Xchg,
     Add,

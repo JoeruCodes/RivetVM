@@ -9,6 +9,7 @@ use crate::{
 pub struct Assign {
     pub dest: ConstraintSystemVariable,
     pub src: Operand,
+    pub block_name: String,
 }
 
 impl ResolveConstraint for Assign {
