@@ -9,8 +9,8 @@ mod disasm;
 mod encode;
 mod op;
 
-pub use decode::{decode, Decoder};
-pub use encode::{encode, Encoder};
+pub use decode::{Decoder, decode};
+pub use encode::{Encoder, encode};
 pub use op::{ConditionCode, Location, Memory, Op, Operand, Register, Size};
 
 /// Prelude for easy assembly

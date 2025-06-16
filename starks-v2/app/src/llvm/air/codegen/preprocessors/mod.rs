@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
+use lang::constraints::phi::Phi;
 use lang::ConstraintSystemVariable as LangVariable;
 use lang::Operand;
 use lang::StructuredAirConstraint;
-use lang::constraints::phi::Phi;
 
 use super::PreprocessedPhiTransitions;
 use super::PreprocessedStructuredConstraints;
@@ -122,10 +122,10 @@ impl AirCodegen {
 mod tests {
     use super::*;
     use lang::{
-        Operand,
         constraints::{
             branch::Branch, conditional_branch::ConditionalBranch, phi::Phi, switch::Switch,
         },
+        Operand,
     };
 
     #[test]

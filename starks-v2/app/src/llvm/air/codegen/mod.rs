@@ -127,6 +127,7 @@ impl AirCodegen {
                     memory_trace_columns.addr.0,
                     memory_trace_columns.val.0,
                     memory_trace_columns.is_write.0,
+                    memory_trace_columns.selector.0,
                 ];
 
                 Ok(GeneratedAir {

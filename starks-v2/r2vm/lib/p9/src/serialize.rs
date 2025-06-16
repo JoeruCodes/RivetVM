@@ -1,6 +1,6 @@
 //! This module defines the wire protocol of 9P, including routines for serialize to or deserialize
 //! from the wire binary format.
-use byteorder::{ReadBytesExt, WriteBytesExt, LE};
+use byteorder::{LE, ReadBytesExt, WriteBytesExt};
 use std::io::{Read, Result, Write};
 use std::time::{Duration, SystemTime};
 

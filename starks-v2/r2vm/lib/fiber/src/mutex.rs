@@ -1,4 +1,4 @@
-use super::park::{park, unpark_all, unpark_one, UnparkToken};
+use super::park::{UnparkToken, park, unpark_all, unpark_one};
 use lock_api::RawMutex as LRawMutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 

@@ -1,5 +1,5 @@
 use super::Network;
-use byteorder::{WriteBytesExt, LE};
+use byteorder::{LE, WriteBytesExt};
 use std::fs::File;
 use std::io::{Result, Write};
 use std::task::{Context, Poll};

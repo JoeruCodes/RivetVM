@@ -1,4 +1,4 @@
-use super::op::{ConditionCode, Location, Memory, Op, Operand, Register, Size, REG_GPB2, REG_GPQ};
+use super::op::{ConditionCode, Location, Memory, Op, Operand, REG_GPB2, REG_GPQ, Register, Size};
 use core::convert::TryFrom;
 
 pub struct Encoder<'a> {

@@ -2,8 +2,8 @@ use super::{Device, DeviceId, Queue};
 use crate::fs::FileSystem;
 use crate::{IrqPin, RuntimeContext};
 use byteorder::{ByteOrder, LE};
-use p9::serialize::{Fcall, Serializable};
 use p9::P9Handler;
+use p9::serialize::{Fcall, Serializable};
 use parking_lot::Mutex;
 use std::sync::Arc;
 

@@ -1,6 +1,6 @@
 use crate::DmaContext;
-use futures::channel::mpsc::{channel, Receiver, Sender};
 use futures::StreamExt;
+use futures::channel::mpsc::{Receiver, Sender, channel};
 use parking_lot::Mutex;
 use std::sync::Arc;
 

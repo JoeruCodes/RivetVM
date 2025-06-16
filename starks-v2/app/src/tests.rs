@@ -40,7 +40,11 @@ fn poly_sub_coeffs(p1: &[u128], p2: &[u128], prime: u128) -> Vec<u128> {
     while result.last() == Some(&0) && result.len() > 1 {
         result.pop();
     }
-    if result.is_empty() { vec![0] } else { result }
+    if result.is_empty() {
+        vec![0]
+    } else {
+        result
+    }
 }
 
 fn poly_mul_by_constant(coeffs: &[u128], c: u128, prime: u128) -> Vec<u128> {
@@ -243,7 +247,11 @@ impl ConstraintProvider for FibonacciConstraintProvider {
         expanded_root_of_unity: Unity,
         trace_len_original: usize,
     ) -> Vec<Vec<u128>> {
-        assert_eq!(trace_coeffs.len(), 1, "Fibonacci trace should have a single column.");
+        assert_eq!(
+            trace_coeffs.len(),
+            1,
+            "Fibonacci trace should have a single column."
+        );
         let p = FieldType::PRIME;
         if cfg!(debug_assertions) {
             eprintln!(
@@ -496,8 +504,6 @@ impl Field for TestField97 {
 fn test_fibonacci_stark() {
     let prime = 97;
     let test_field_instance = TestField::new(prime);
-
-
 
     let stark_instance = StarkV2::<TestField97, FibonacciConstraintProvider> {
         field: TestField97,

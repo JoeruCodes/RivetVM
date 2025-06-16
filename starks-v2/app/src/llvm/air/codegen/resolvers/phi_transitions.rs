@@ -4,8 +4,8 @@ use super::AirCodegen;
 use crate::Field;
 use lang::ctx::AirGenContext;
 use lang::{
+    constraints::{lang_operand_to_air_expression, AirExpression, AirTraceVariable, RowOffset},
     ConstraintSystemVariable as LangVariable, Operand,
-    constraints::{AirExpression, AirTraceVariable, RowOffset, lang_operand_to_air_expression},
 };
 
 impl AirCodegen {

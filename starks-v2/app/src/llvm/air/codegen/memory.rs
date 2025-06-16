@@ -1,5 +1,5 @@
 use lang::constraints::{
-    AirExpression as AirConstraint, AirTraceVariable, RowOffset, lang_operand_to_air_expression,
+    lang_operand_to_air_expression, AirExpression as AirConstraint, AirTraceVariable, RowOffset,
 };
 use lang::ctx::AirGenContext;
 use lang::{MemoryAccessLogEntry, MemoryAccessType};
@@ -15,6 +15,8 @@ pub struct MemoryTraceColumns {
     pub val: AirTraceVariable,
 
     pub is_write: AirTraceVariable,
+
+    pub selector: AirTraceVariable,
 }
 
 pub fn generate_memory_air_constraints(
@@ -33,11 +35,16 @@ pub fn generate_memory_air_constraints(
     let is_write_col = AirTraceVariable(next_trace_col_idx);
     next_trace_col_idx += 1;
 
+    // selector column
+    let sel_col = AirTraceVariable(next_trace_col_idx);
+    next_trace_col_idx += 1;
+
     let memory_cols = MemoryTraceColumns {
         clk: clk_col,
         addr: addr_col,
         val: val_col,
         is_write: is_write_col,
+        selector: sel_col,
     };
 
     if memory_log.is_empty() {
@@ -56,15 +63,31 @@ pub fn generate_memory_air_constraints(
         let m_addr_c = AirConstraint::Trace(memory_cols.addr, RowOffset::Current);
         let m_val_c = AirConstraint::Trace(memory_cols.val, RowOffset::Current);
         let m_is_write_c = AirConstraint::Trace(memory_cols.is_write, RowOffset::Current);
+        let sel_c = AirConstraint::Trace(memory_cols.selector, RowOffset::Current);
 
-        constraints.push(AirConstraint::Sub(
-            Box::new(m_clk_c.clone()),
-            Box::new(AirConstraint::Constant(entry.time_step.0 as u128)),
+        // selector booleanity
+        constraints.push(AirConstraint::Mul(
+            Box::new(sel_c.clone()),
+            Box::new(AirConstraint::Sub(
+                Box::new(sel_c.clone()),
+                Box::new(AirConstraint::Constant(1)),
+            )),
         ));
 
-        constraints.push(AirConstraint::Sub(
-            Box::new(m_addr_c.clone()),
-            Box::new(lang_operand_to_air_expression(entry.address)),
+        constraints.push(AirConstraint::Mul(
+            Box::new(sel_c.clone()),
+            Box::new(AirConstraint::Sub(
+                Box::new(m_clk_c.clone()),
+                Box::new(AirConstraint::Constant(entry.time_step.0 as u128)),
+            )),
+        ));
+
+        constraints.push(AirConstraint::Mul(
+            Box::new(sel_c.clone()),
+            Box::new(AirConstraint::Sub(
+                Box::new(m_addr_c.clone()),
+                Box::new(lang_operand_to_air_expression(entry.address)),
+            )),
         ));
 
         let is_write_val_const =
@@ -73,24 +96,33 @@ pub fn generate_memory_air_constraints(
             } else {
                 0
             });
-        constraints.push(AirConstraint::Sub(
-            Box::new(m_is_write_c.clone()),
-            Box::new(is_write_val_const.clone()),
-        ));
-
         constraints.push(AirConstraint::Mul(
-            Box::new(m_is_write_c.clone()),
+            Box::new(sel_c.clone()),
             Box::new(AirConstraint::Sub(
                 Box::new(m_is_write_c.clone()),
-                Box::new(AirConstraint::Constant(1)),
+                Box::new(is_write_val_const.clone()),
             )),
         ));
 
         constraints.push(AirConstraint::Mul(
-            Box::new(is_write_val_const.clone()),
-            Box::new(AirConstraint::Sub(
-                Box::new(m_val_c.clone()),
-                Box::new(lang_operand_to_air_expression(entry.value)),
+            Box::new(sel_c.clone()),
+            Box::new(AirConstraint::Mul(
+                Box::new(m_is_write_c.clone()),
+                Box::new(AirConstraint::Sub(
+                    Box::new(m_is_write_c.clone()),
+                    Box::new(AirConstraint::Constant(1)),
+                )),
+            )),
+        ));
+
+        constraints.push(AirConstraint::Mul(
+            Box::new(sel_c.clone()),
+            Box::new(AirConstraint::Mul(
+                Box::new(is_write_val_const.clone()),
+                Box::new(AirConstraint::Sub(
+                    Box::new(m_val_c.clone()),
+                    Box::new(lang_operand_to_air_expression(entry.value)),
+                )),
             )),
         ));
     }
@@ -99,11 +131,14 @@ pub fn generate_memory_air_constraints(
         let m_clk_c = AirConstraint::Trace(memory_cols.clk, RowOffset::Current);
         let m_addr_c = AirConstraint::Trace(memory_cols.addr, RowOffset::Current);
         let m_val_c = AirConstraint::Trace(memory_cols.val, RowOffset::Current);
+        let m_is_write_c = AirConstraint::Trace(memory_cols.is_write, RowOffset::Current);
+        let sel_c = AirConstraint::Trace(memory_cols.selector, RowOffset::Current);
 
         let m_clk_n = AirConstraint::Trace(memory_cols.clk, RowOffset::Next);
         let m_addr_n = AirConstraint::Trace(memory_cols.addr, RowOffset::Next);
         let m_val_n = AirConstraint::Trace(memory_cols.val, RowOffset::Next);
         let m_is_write_n = AirConstraint::Trace(memory_cols.is_write, RowOffset::Next);
+        let sel_n = AirConstraint::Trace(memory_cols.selector, RowOffset::Next);
 
         let next_entry_val_expr = lang_operand_to_air_expression(memory_log[i + 1].value);
 
@@ -148,10 +183,13 @@ pub fn generate_memory_air_constraints(
         let clk_diff_non_negative_aux =
             AirConstraint::Trace(air_gen_ctx.new_aux_variable(), RowOffset::Current);
         constraints.push(AirConstraint::Mul(
-            Box::new(is_addr_same_aux.clone()),
-            Box::new(AirConstraint::Sub(
-                Box::new(clk_diff_val_expr.clone()),
-                Box::new(clk_diff_non_negative_aux.clone()),
+            Box::new(sel_c.clone()),
+            Box::new(AirConstraint::Mul(
+                Box::new(is_addr_same_aux.clone()),
+                Box::new(AirConstraint::Sub(
+                    Box::new(clk_diff_val_expr.clone()),
+                    Box::new(clk_diff_non_negative_aux.clone()),
+                )),
             )),
         ));
 
@@ -180,8 +218,11 @@ pub fn generate_memory_air_constraints(
             Box::new(expected_val_n_if_addr_same),
         );
         constraints.push(AirConstraint::Mul(
-            Box::new(is_addr_same_aux.clone()),
-            Box::new(val_consistency_if_addr_same),
+            Box::new(sel_c.clone()),
+            Box::new(AirConstraint::Mul(
+                Box::new(is_addr_same_aux.clone()),
+                Box::new(val_consistency_if_addr_same),
+            )),
         ));
 
         let not_is_addr_same_selector = AirConstraint::Sub(
@@ -197,8 +238,17 @@ pub fn generate_memory_air_constraints(
             Box::new(read_selector_next_for_new_addr),
         );
         constraints.push(AirConstraint::Mul(
-            Box::new(term1),
-            Box::new(m_val_n.clone()),
+            Box::new(sel_c.clone()),
+            Box::new(AirConstraint::Mul(
+                Box::new(term1),
+                Box::new(AirConstraint::Sub(
+                    Box::new(AirConstraint::Sub(
+                        Box::new(m_clk_n.clone()),
+                        Box::new(m_clk_c.clone()),
+                    )),
+                    Box::new(AirConstraint::Constant(1)),
+                )),
+            )),
         ));
     }
 

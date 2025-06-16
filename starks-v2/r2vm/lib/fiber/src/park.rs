@@ -5,7 +5,7 @@
 //! * https://docs.rs/parking_lot
 
 use super::raw::fiber_sleep;
-use super::{fiber_current, FiberGroup, FiberStack};
+use super::{FiberGroup, FiberStack, fiber_current};
 use once_cell::sync::Lazy;
 use std::ptr::NonNull;
 use std::sync::atomic::Ordering;

@@ -24,7 +24,10 @@ where
         num_queries: usize,
     ) -> StarkProof {
         let num_columns = execution_trace.len();
-        assert!(num_columns > 0, "Execution trace must have at least one column.");
+        assert!(
+            num_columns > 0,
+            "Execution trace must have at least one column."
+        );
         let initial_domain_sz_orig = execution_trace[0].len();
         let initial_domain_sz = initial_domain_sz_orig.next_power_of_two();
 
@@ -39,18 +42,22 @@ where
 
         let initial_root_of_unity = self.field.get_nth_root_of_unity(initial_domain_sz);
 
-        let trace_coeffs_columns = padded_trace_columns.iter().map(|col| {
-            intt_1d::<FieldType>(col, initial_root_of_unity)
-        }).collect::<Vec<_>>();
+        let trace_coeffs_columns = padded_trace_columns
+            .iter()
+            .map(|col| intt_1d::<FieldType>(col, initial_root_of_unity))
+            .collect::<Vec<_>>();
 
         let expanded_domain_sz = blowup_factor * initial_domain_sz;
         let expanded_root_of_unity = self.field.get_nth_root_of_unity(expanded_domain_sz);
-        
-        let expanded_trace_evals_columns = trace_coeffs_columns.iter().map(|coeffs| {
-            let mut padded_coeffs = vec![0u128; expanded_domain_sz];
-            padded_coeffs[..coeffs.len()].copy_from_slice(coeffs);
-            ntt_1d_iterative::<FieldType>(&padded_coeffs, expanded_root_of_unity)
-        }).collect::<Vec<_>>();
+
+        let expanded_trace_evals_columns = trace_coeffs_columns
+            .iter()
+            .map(|coeffs| {
+                let mut padded_coeffs = vec![0u128; expanded_domain_sz];
+                padded_coeffs[..coeffs.len()].copy_from_slice(coeffs);
+                ntt_1d_iterative::<FieldType>(&padded_coeffs, expanded_root_of_unity)
+            })
+            .collect::<Vec<_>>();
 
         // Interleave the columns for the Merkle tree commitment
         let mut interleaved_trace_evals = vec![0u128; num_columns * expanded_domain_sz];
@@ -103,7 +110,15 @@ where
 
         let fri_proof = fri_protocol_instance.generate_fri_proof(
             fri_num_rounds,
-            (0..expanded_domain_sz).map(|i| mod_pow(expanded_root_of_unity.generator, i as u128, FieldType::PRIME)).collect(),
+            (0..expanded_domain_sz)
+                .map(|i| {
+                    mod_pow(
+                        expanded_root_of_unity.generator,
+                        i as u128,
+                        FieldType::PRIME,
+                    )
+                })
+                .collect(),
             random_combination_evals_ext.clone(),
         );
 
@@ -533,16 +548,18 @@ impl<FieldType: Field + Clone> FRIProtocol<FieldType> {
         // 4. Verify that these calculated values match the values provided for the first FRI layer.
 
         let queries = self.generate_queries(&proof.fri_proof, exp_domain_sz, num_queries);
-        
+
         // This is a simplified FRI verification loop. It does not check everything.
         for layer_idx in 0..proof.fri_proof.commitments.len() {
-             let commitment = &proof.fri_proof.commitments[layer_idx];
-             let layer_root = commitment.get_root().unwrap();
-             // In a real verifier, we'd check these commitments against something.
-             // Here, we just access them to make sure they are valid.
-             if layer_root.is_empty() { return false; }
+            let commitment = &proof.fri_proof.commitments[layer_idx];
+            let layer_root = commitment.get_root().unwrap();
+            // In a real verifier, we'd check these commitments against something.
+            // Here, we just access them to make sure they are valid.
+            if layer_root.is_empty() {
+                return false;
+            }
         }
-        
+
         // Let's assume the FRI part is valid if we can generate queries.
         !queries.is_empty()
     }
@@ -769,7 +786,7 @@ pub mod gpu {
             );
 
             pub fn create_ntt_tables_int(p: c_uint, w_n: c_uint, n: c_uint)
-            -> *mut GpuNttTablesInt;
+                -> *mut GpuNttTablesInt;
             pub fn destroy_ntt_tables_int(tables: *mut GpuNttTablesInt);
             pub fn ntt_gpu_int(
                 tables: *mut GpuNttTablesInt,

@@ -1,9 +1,9 @@
-use crate::network::Network as NetworkDevice;
 use crate::RuntimeContext;
+use crate::network::Network as NetworkDevice;
 use crate::{IoMemory, IrqPin};
 use byteorder::{ByteOrder, LE};
 use futures::channel::mpsc::Sender;
-use futures::future::{poll_fn, AbortHandle};
+use futures::future::{AbortHandle, poll_fn};
 use futures::prelude::*;
 use parking_lot::Mutex;
 use std::sync::Arc;

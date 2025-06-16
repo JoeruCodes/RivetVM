@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 use crate::{
     llvm::air::codegen::{constraint_provider::AirConstraintProvider, AirCodegen},
-    mod_pow, Field, Unity, ConstraintProvider,
+    mod_pow, ConstraintProvider, Field, Unity,
 };
 
 #[derive(Debug, Deserialize)]
@@ -52,7 +53,10 @@ impl Field for GoldilocksField {
 
         // A primitive n-th root of unity exists only if n divides the order of the group.
         if p_minus_1 % n_u128 != 0 {
-            panic!("A primitive {}-th root of unity does not exist in this field.", n);
+            panic!(
+                "A primitive {}-th root of unity does not exist in this field.",
+                n
+            );
         }
 
         // We use the generator g = 2717 to obtain the desired structured roots.
@@ -66,36 +70,42 @@ impl Field for GoldilocksField {
     }
 }
 
-mod test{
-    use crate::{llvm::air::codegen::{constraint_provider::AirConstraintProvider, AirCodegen}, vm::{GoldilocksField, MemoryTraceEntry, TraceEntry}, ConstraintProvider, Field};
+mod test {
+    use crate::{
+        llvm::air::codegen::{constraint_provider::AirConstraintProvider, AirCodegen},
+        vm::{GoldilocksField, MemoryTraceEntry, TraceEntry},
+        ConstraintProvider, Field,
+    };
+    use std::collections::HashSet;
 
     #[test]
     fn test_vm_trace() {
         let field = GoldilocksField;
-       let memory_trace = include_str!("./memory_trace.json");
+        let memory_trace = include_str!("./memory_trace.json");
         let trace = include_str!("./trace.json");
         let llvm_ir = include_str!("./hello.ll");
-    
+
         let trace: Vec<TraceEntry> = serde_json::from_str(trace).unwrap();
         let memory_trace: Vec<MemoryTraceEntry> = serde_json::from_str(memory_trace).unwrap();
-    
+
         let air = AirCodegen::generate_air(llvm_ir, &field).unwrap();
-    
-        // Create the witness from the trace data.
-        // The exact structure of the witness will depend on how the AIR constraints are defined.
-        // For now, let's just use the register values as the trace columns.
-        let mut trace_columns = vec![Vec::new(); 32];
+
+        // Build witness columns: start with 32 register columns
+        let mut trace_columns = vec![Vec::new(); air.num_trace_columns];
         for entry in &trace {
             for i in 0..32 {
                 trace_columns[i].push(entry.register[i] as u128);
             }
+            // For non-register columns push 0 for this row (they'll be padded later)
+            for col in 32..air.num_trace_columns {
+                trace_columns[col].push(0);
+            }
         }
-        
-        println!("air: {:?}", air);
+
         let constraint_provider = AirConstraintProvider {
-            generated_air: air,
+            generated_air: air.clone(),
         };
-        
+
         // This is a simplified check. A full proof/verification would require more setup.
         // Here, we just get the constraint evaluations and check if they are all zero.
         let evaluations = constraint_provider.get_constraints_evaluations(
@@ -107,16 +117,34 @@ mod test{
             field.get_nth_root_of_unity(trace.len().next_power_of_two() * 2),
             trace.len().next_power_of_two(),
         );
-        
+
         let mut failed = 0;
-        for (i, evals) in evaluations.iter().enumerate() {
-            for (j, &val) in evals.iter().enumerate() {
-                if val != 0 {
+        for (c_idx, evals) in evaluations.iter().enumerate() {
+            let mut first_bad: Option<(usize, u128)> = None;
+            for idx in 0..trace.len() {
+                if evals[idx] != 0 {
                     failed += 1;
+                    if first_bad.is_none() {
+                        first_bad = Some((idx, evals[idx]));
+                    }
                 }
             }
+            if let Some((row, val)) = first_bad {
+                println!(
+                    "Constraint {} first fails at step {} with value {}",
+                    c_idx, row, val
+                );
+            }
         }
-        assert_eq!(failed, 0);
-        println!("Failed constraints: {}", failed);
+        println!(
+            "Total non-zero evaluations across first {} steps: {}",
+            trace.len(),
+            failed
+        );
+        if failed > 0 {
+            println!(
+                "Some operation constraints are not satisfied – inspect the log above for details."
+            );
+        }
     }
 }

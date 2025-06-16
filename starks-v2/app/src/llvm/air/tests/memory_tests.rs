@@ -3,7 +3,7 @@ mod memory_air_tests {
     use crate::llvm::air::codegen::memory;
     use lang::constraints::{AirExpression, AirTraceVariable, RowOffset};
     use lang::ctx::AirGenContext;
-    use lang::{Operand as LangOperand, StructuredAirConstraint, process_llvm_ir};
+    use lang::{process_llvm_ir, Operand as LangOperand, StructuredAirConstraint};
 
     const CLK_DIFFERENCE_BITWIDTH_FOR_TEST: usize = 32;
 

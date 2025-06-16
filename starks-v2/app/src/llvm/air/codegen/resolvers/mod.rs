@@ -1,6 +1,6 @@
+use lang::constraints::{AirExpression, ResolveConstraint};
 use lang::ConstraintSystemVariable as LangVariable;
 use lang::StructuredAirConstraint;
-use lang::constraints::{AirExpression, ResolveConstraint};
 use std::collections::HashMap;
 
 use super::AirCodegen;
