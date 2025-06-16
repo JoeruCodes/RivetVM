@@ -374,6 +374,7 @@ pub fn process_llvm_ir(
                         .and_then(|either_val| either_val.right())
                 };
 
+                println!("opcode: {:?}", opcode);
                 match opcode {
                     InstructionOpcode::Unreachable
                     | InstructionOpcode::Fence

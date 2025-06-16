@@ -1,6 +1,18 @@
 [workspace]
-members = ["starks-v2", "lang"]
-resolver = "3"
+members = [
+    "lang",
+    "starks-v2/app",
+    "starks-v2/r2vm/lib/p9",
+    "starks-v2/r2vm/lib/x86",
+    "starks-v2/r2vm/lib/riscv",
+    "starks-v2/r2vm/lib/fdt",
+    "starks-v2/r2vm/lib/usernet",
+    "starks-v2/r2vm/lib/fiber",
+    "starks-v2/r2vm/lib/ro_cell",
+    "starks-v2/r2vm/lib/io",
+    "starks-v2/r2vm"
+]
+resolver = "2"
 
 [workspace.dependencies]
 futures = "0.3.31"
