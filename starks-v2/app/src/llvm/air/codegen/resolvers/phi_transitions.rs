@@ -4,7 +4,7 @@ use super::AirCodegen;
 use crate::Field;
 use lang::ctx::AirGenContext;
 use lang::{
-    constraints::{lang_operand_to_air_expression, AirExpression, AirTraceVariable, RowOffset},
+    constraints::{AirExpression, AirTraceVariable, RowOffset},
     ConstraintSystemVariable as LangVariable, Operand,
 };
 
@@ -18,7 +18,7 @@ impl AirCodegen {
         for ((header_block, _latch_block), transitions) in loop_phi_transitions {
             for (phi_res_in_header, val_from_latch_op) in transitions {
                 let phi_res_air_var = AirTraceVariable(phi_res_in_header.0);
-                let val_from_latch_expr = lang_operand_to_air_expression(val_from_latch_op);
+                let val_from_latch_expr = self.ctx.expr_for_operand(val_from_latch_op);
 
                 let transition_constraint = AirExpression::Sub(
                     Box::new(AirExpression::Trace(phi_res_air_var, RowOffset::Next)),

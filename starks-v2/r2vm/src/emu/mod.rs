@@ -165,7 +165,6 @@ pub static CONSOLE: Lazy<io::serial::Console> = Lazy::new(|| {
     console.set_processor(move |x| {
         if !escape_hit {
             if x == 1 {
-                // Ctrl + A hit, wait for another byte to arrive
                 escape_hit = true;
                 return None;
             }
@@ -174,7 +173,6 @@ pub static CONSOLE: Lazy<io::serial::Console> = Lazy::new(|| {
 
         escape_hit = false;
 
-        // Byte after Ctrl + A hit, do corresponding action
         match x {
             b't' => {
                 let model_id = if crate::get_flags().model_id == 0 { 1 } else { 0 };
@@ -190,9 +188,9 @@ pub static CONSOLE: Lazy<io::serial::Console> = Lazy::new(|| {
             b'c' => unsafe {
                 libc::raise(libc::SIGTRAP);
             },
-            // Hit Ctrl + A twice, send Ctrl + A to guest
+
             1 => return Some(x),
-            // Ignore all other characters
+
             _ => (),
         }
         None
@@ -200,25 +198,16 @@ pub static CONSOLE: Lazy<io::serial::Console> = Lazy::new(|| {
     console
 });
 
-/// This governs the boundary between RAM and I/O memory. If an address is strictly below this
-/// location, then it is considered I/O. For user-space applications, we consider all memory
-/// locations as RAM, so the default value here is 0.
 static IO_BOUNDARY: RoCell<usize> = RoCell::new(0);
 
-/// Only memory addresses strictly below this location is accessible by the guest. For user-space
-/// application, we consider all memory locations as RAM, so the default value here is usize::MAX.
 static MEM_BOUNDARY: RoCell<usize> = RoCell::new(usize::MAX);
+
+pub static LIBC_RETURN_PC: RoCell<u64> = RoCell::new(0);
 
 pub fn init() {
     unsafe {
-        // The memory map looks like this:
-        // 0 MiB - 2 MiB (reserved for null)
-        // 2 MiB - 6 MiB PLIC
-        // 6 MiB -       VIRTIO
-        // 1 GiB -       main memory
         RoCell::replace(&IO_BOUNDARY, 0x40000000);
 
-        // If firmware is present give it 2MiB of extra memory.
         let phys_size = (crate::CONFIG.memory
             + (if crate::CONFIG.firmware.is_some() { 2 } else { 0 }))
             * 1024
@@ -227,7 +216,6 @@ pub fn init() {
 
         RoCell::replace(&MEM_BOUNDARY, phys_limit);
 
-        // First allocate physical memory region, without making them accessible
         let result = libc::mmap(
             0x200000 as _,
             (phys_limit - 0x200000) as _,
@@ -240,7 +228,6 @@ pub fn init() {
             panic!("mmap failed while initing");
         }
 
-        // Allocate wanted memory
         let result =
             libc::mprotect(0x40000000 as _, phys_size as _, libc::PROT_READ | libc::PROT_WRITE);
         if result != 0 {
@@ -293,7 +280,6 @@ pub fn device_tree() -> fdt::Node {
     root
 }
 
-// TODO: Remove these 2 functions
 pub fn read_memory<T: Copy>(addr: usize) -> T {
     assert!(addr >= *IO_BOUNDARY, "{:x} access out-of-bound", addr);
     unsafe { std::ptr::read(addr as *const T) }

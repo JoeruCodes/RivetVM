@@ -8,7 +8,7 @@ const VIRTIO_BLK_F_RO: usize = 5;
 
 const VIRTIO_BLK_T_IN: u32 = 0;
 const VIRTIO_BLK_T_OUT: u32 = 1;
-/// This is an un-documented.
+
 const VIRTIO_BLK_T_GET_ID: u32 = 8;
 
 #[repr(C)]
@@ -18,7 +18,6 @@ struct VirtioBlkReqHeader {
     sector: u64,
 }
 
-/// A virtio block device.
 pub struct Block {
     status: u32,
     config: [u8; 8],
@@ -32,7 +31,6 @@ struct Inner {
 }
 
 impl Block {
-    /// Create a new virtio block device.
     pub fn new(
         ctx: Arc<dyn RuntimeContext>,
         irq: Box<dyn IrqPin>,
@@ -73,16 +71,13 @@ impl Block {
                         let mut io_buffer = Vec::with_capacity(reader.len() - 16);
                         unsafe { io_buffer.set_len(io_buffer.capacity()) };
                         reader.read_exact(&mut io_buffer).await.unwrap();
-
                         inner.file.write_all_at(&io_buffer, header.sector * 512).unwrap();
-                        // We must make sure the data has been flushed into the disk before returning
                         inner.file.flush().unwrap();
                         trace!(target: "VirtioBlk", "write {} bytes from sector {:x}", io_buffer.len(), header.sector);
 
                         writer.write_all(&[0]).await.unwrap();
                     }
                     VIRTIO_BLK_T_GET_ID => {
-                        // Fill in a dummy ID for now.
                         let len = writer.len();
                         writer.write_all(&vec![0; len]).await.unwrap();
                     }

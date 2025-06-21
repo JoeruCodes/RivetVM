@@ -1,7 +1,6 @@
 use core::convert::TryFrom;
 use core::fmt::{self, Write};
 
-/// Helper for displaying signed hex
 struct Signed(i64);
 
 impl fmt::LowerHex for Signed {
@@ -23,7 +22,6 @@ impl fmt::LowerHex for Signed {
     }
 }
 
-/// Supported sizes of operands
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Size {
@@ -46,8 +44,6 @@ impl Ord for Size {
 }
 
 impl Size {
-    /// In AMD64, immediates are usually only dword-sized. Therefore it is quite often that we need
-    /// to cap size to dword.
     pub fn cap_to_dword(self) -> Self {
         match self {
             Size::Qword => Size::Dword,
@@ -77,20 +73,18 @@ impl fmt::Debug for Size {
     }
 }
 
-// The register name is represented using an integer. The lower 4-bit represents the index, and the highest bits
-// represents types of the register.
 pub const REG_GPB: u8 = 0x10;
 pub const REG_GPW: u8 = 0x20;
 pub const REG_GPD: u8 = 0x30;
 pub const REG_GPQ: u8 = 0x40;
-// This is for special spl, bpl, sil and dil
+
 pub const REG_GPB2: u8 = 0x50;
 
 #[rustfmt::skip]
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Register {
-    // General purpose registers
+    
     AL   = 0  | REG_GPB, AX   = 0  | REG_GPW, EAX  = 0  | REG_GPD, RAX = 0  | REG_GPQ,
     CL   = 1  | REG_GPB, CX   = 1  | REG_GPW, ECX  = 1  | REG_GPD, RCX = 1  | REG_GPQ,
     DL   = 2  | REG_GPB, DX   = 2  | REG_GPW, EDX  = 2  | REG_GPD, RDX = 2  | REG_GPQ,
@@ -107,9 +101,9 @@ pub enum Register {
     R13B = 13 | REG_GPB, R13W = 13 | REG_GPW, R13D = 13 | REG_GPD, R13 = 13 | REG_GPQ,
     R14B = 14 | REG_GPB, R14W = 14 | REG_GPW, R14D = 14 | REG_GPD, R14 = 14 | REG_GPQ,
     R15B = 15 | REG_GPB, R15W = 15 | REG_GPW, R15D = 15 | REG_GPD, R15 = 15 | REG_GPQ,
-    // Special register that requires REX prefix to access.
+    
     SPL = 4 | REG_GPB2, BPL = 5 | REG_GPB2, SIL = 6 | REG_GPB2, DIL = 7 | REG_GPB2,
-    // Special register that should only be used for base register of memory
+    
     RIP = 0x60,
 }
 
@@ -125,10 +119,7 @@ impl Register {
         }
     }
 
-    /// Given a register ID and a size, construct a `Register` object.
-    /// Note that AH, DH, CH, BH are not constructible with this function.
     pub fn from_id_and_size(id: u8, size: Size) -> Register {
-        // Make sure this will always be a valid register
         let id = id & 15;
 
         let mask = match size {
@@ -144,12 +135,10 @@ impl Register {
             Size::Qword => REG_GPQ,
         };
 
-        // This will always be valid
         unsafe { core::mem::transmute(id | mask) }
     }
 
     pub fn resize(self, size: Size) -> Self {
-        // AH - BH must not be used in resize
         assert!(!(self as u8 >= Register::AH as u8 && self as u8 <= Register::BH as u8));
         Self::from_id_and_size(self as u8, size)
     }
@@ -191,7 +180,6 @@ impl fmt::Debug for Register {
 
 #[derive(Clone, Copy)]
 pub struct Memory {
-    // We don't need to worry about the size, Rust can optimise it to 1 bytes
     pub base: Option<Register>,
     pub index: Option<(Register, u8)>,
     pub displacement: i32,
@@ -228,7 +216,6 @@ impl fmt::Display for Memory {
         }
 
         if first {
-            // Write out the full address in this case.
             write!(f, "{:#x}", self.displacement as u64)?;
         } else if self.displacement != 0 {
             write!(f, "{:+#x}", Signed(self.displacement as i64))?;
@@ -244,7 +231,6 @@ impl fmt::Debug for Memory {
     }
 }
 
-/// Represent a register or memory location. Can be used as left-value operand.
 #[derive(Clone, Copy)]
 pub enum Location {
     Reg(Register),
@@ -296,7 +282,6 @@ impl fmt::Debug for Location {
     }
 }
 
-/// Represent a register, memory or immediate value. Can be used as right-value operand.
 #[derive(Clone, Copy)]
 pub enum Operand {
     Reg(Register),
@@ -367,25 +352,23 @@ impl fmt::Debug for Operand {
 pub enum ConditionCode {
     Overflow = 0x0,
     NotOverflow = 0x1,
-    Below = 0x2,      // Carry = 0x2, NotAboveEqual = 0x2,
-    AboveEqual = 0x3, // NotBelow = 0x3, NotCarry = 0x3,
-    Equal = 0x4,      // Zero = 0x4,
-    NotEqual = 0x5,   // NotZero = 0x5,
-    BelowEqual = 0x6, // NotAbove = 0x6,
-    Above = 0x7,      // NotBelowEqual = 0x7,
+    Below = 0x2,
+    AboveEqual = 0x3,
+    Equal = 0x4,
+    NotEqual = 0x5,
+    BelowEqual = 0x6,
+    Above = 0x7,
     Sign = 0x8,
     NotSign = 0x9,
-    Parity = 0xA,       // ParityEven = 0xA,
-    NotParity = 0xB,    // ParityOdd = 0xB,
-    Less = 0xC,         // NotGreaterEqual = 0xC,
-    GreaterEqual = 0xD, // NotLess = 0xD,
-    LessEqual = 0xE,    // NotGreater = 0xE,
-    Greater = 0xF,      // NotLessEqual = 0xF,
+    Parity = 0xA,
+    NotParity = 0xB,
+    Less = 0xC,
+    GreaterEqual = 0xD,
+    LessEqual = 0xE,
+    Greater = 0xF,
 }
 
 impl ConditionCode {
-    /// Get the condition code when the operands of `cmp` are arranged in the different order.
-    /// i.e. `<` is turned into `>`, `<=` into `>=`.
     pub fn swap(self) -> Self {
         match self {
             ConditionCode::Less => ConditionCode::Greater,
@@ -456,11 +439,11 @@ pub enum Op {
     Jcc(i32, ConditionCode),
     Jmp(Operand),
     Lea(Register, Memory),
-    /// Technically this should be a prefix, but we have it as an op for simplicity
+
     Lock,
     Mfence,
     Mov(Location, Operand),
-    /// mov instruction with absolute address as src or dst
+
     Movabs(Operand, Operand),
     Movsx(Register, Location),
     Movzx(Register, Location),
@@ -471,7 +454,7 @@ pub enum Op {
     Or(Location, Operand),
     Pop(Location),
     Push(Operand),
-    // ret with stack pop. If the instruction shouldn't pop stack, set pop to 0.
+
     Ret(u16),
     Sar(Location, Operand),
     Sbb(Location, Operand),
@@ -485,7 +468,6 @@ pub enum Op {
     Xor(Location, Operand),
 }
 
-// index * scale
 impl core::ops::Mul<u8> for Register {
     type Output = Memory;
     fn mul(self, rhs: u8) -> Memory {
@@ -493,7 +475,6 @@ impl core::ops::Mul<u8> for Register {
     }
 }
 
-// base + index * scale
 impl core::ops::Add<Memory> for Register {
     type Output = Memory;
     fn add(self, mut rhs: Memory) -> Memory {
@@ -502,7 +483,6 @@ impl core::ops::Add<Memory> for Register {
     }
 }
 
-// base + index
 impl core::ops::Add<Register> for Register {
     type Output = Memory;
     fn add(self, rhs: Register) -> Memory {
@@ -510,7 +490,6 @@ impl core::ops::Add<Register> for Register {
     }
 }
 
-// base + displacement
 impl core::ops::Add<i32> for Register {
     type Output = Memory;
     fn add(self, rhs: i32) -> Memory {
@@ -518,7 +497,6 @@ impl core::ops::Add<i32> for Register {
     }
 }
 
-// base - displacement
 impl core::ops::Sub<i32> for Register {
     type Output = Memory;
     fn sub(self, rhs: i32) -> Memory {
@@ -526,7 +504,6 @@ impl core::ops::Sub<i32> for Register {
     }
 }
 
-// [base +] index * scale + displacement
 impl core::ops::Add<i32> for Memory {
     type Output = Memory;
     fn add(mut self, rhs: i32) -> Memory {

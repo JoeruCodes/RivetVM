@@ -1,8 +1,5 @@
 use super::op::{Op, Ordering};
 
-// #region: decoding helpers for 32-bit instructions
-//
-
 fn rd(bits: u32) -> u8 {
     ((bits >> 7) & 0b11111) as u8
 }
@@ -57,12 +54,6 @@ fn j_imm(instr: u32) -> i32 {
         | ((instr & 0b00000000_00010000_00000000_00000000) as i32) >> 9
         | ((instr & 0b01111111_11100000_00000000_00000000) as i32) >> 20
 }
-
-//
-// #endregion
-
-// #region: decoding helpers for compressed 16-bit instructions
-//
 
 fn c_funct3(bits: u16) -> u32 {
     ((bits >> 13) & 0b111) as u32
@@ -169,267 +160,145 @@ fn cj_imm(bits: u16) -> i32 {
         | ((bits & 0b00000000_00111000) as i32) >> 2
 }
 
-//
-// #endregion
-
 pub fn decode_compressed(bits: u16) -> Op {
     let function = c_funct3(bits);
 
     match bits & 0b11 {
-        0b00 => {
-            match function {
-                0b000 => {
-                    let imm = ciw_imm(bits);
+        0b00 => match function {
+            0b000 => {
+                let imm = ciw_imm(bits);
+                if imm == 0 {
+                    return Op::Illegal;
+                }
+
+                Op::Addi { rd: c_rds(bits), rs1: 2, imm }
+            }
+            0b001 => Op::Fld { frd: c_rds(bits), rs1: c_rs1s(bits), imm: cl_ld_imm(bits) },
+            0b010 => Op::Lw { rd: c_rds(bits), rs1: c_rs1s(bits), imm: cl_lw_imm(bits) },
+            0b011 => Op::Ld { rd: c_rds(bits), rs1: c_rs1s(bits), imm: cl_ld_imm(bits) },
+            0b100 => Op::Illegal,
+            0b101 => Op::Fsd { rs1: c_rs1s(bits), frs2: c_rs2s(bits), imm: cs_sd_imm(bits) },
+            0b110 => Op::Sw { rs1: c_rs1s(bits), rs2: c_rs2s(bits), imm: cs_sw_imm(bits) },
+            0b111 => Op::Sd { rs1: c_rs1s(bits), rs2: c_rs2s(bits), imm: cs_sd_imm(bits) },
+
+            _ => unreachable!(),
+        },
+        0b01 => match function {
+            0b000 => {
+                let rd = c_rd(bits);
+                Op::Addi { rd, rs1: rd, imm: ci_imm(bits) }
+            }
+            0b001 => {
+                let rd = c_rd(bits);
+                if rd == 0 {
+                    return Op::Illegal;
+                }
+
+                Op::Addiw { rd, rs1: rd, imm: ci_imm(bits) }
+            }
+            0b010 => Op::Addi { rd: c_rd(bits), rs1: 0, imm: ci_imm(bits) },
+            0b011 => {
+                let rd = c_rd(bits);
+                if rd == 2 {
+                    let imm = ci_addi16sp_imm(bits);
                     if imm == 0 {
-                        // Illegal instruction
                         return Op::Illegal;
                     }
-                    // C.ADDI4SPN
-                    // translate to addi rd', x2, imm
-                    Op::Addi { rd: c_rds(bits), rs1: 2, imm }
+
+                    Op::Addi { rd: 2, rs1: 2, imm }
+                } else {
+                    Op::Lui { rd, imm: ci_imm(bits) << 12 }
                 }
-                0b001 => {
-                    // C.FLD
-                    // translate to fld rd', rs1', offset
-                    Op::Fld { frd: c_rds(bits), rs1: c_rs1s(bits), imm: cl_ld_imm(bits) }
-                }
-                0b010 => {
-                    // C.LW
-                    // translate to lw rd', rs1', offset
-                    Op::Lw { rd: c_rds(bits), rs1: c_rs1s(bits), imm: cl_lw_imm(bits) }
-                }
-                0b011 => {
-                    // C.LD
-                    // translate to ld rd', rs1', offset
-                    Op::Ld { rd: c_rds(bits), rs1: c_rs1s(bits), imm: cl_ld_imm(bits) }
-                }
-                0b100 => {
-                    // Reserved
-                    Op::Illegal
-                }
-                0b101 => {
-                    // C.FSD
-                    // translate to fsd rs2', rs1', offset
-                    Op::Fsd { rs1: c_rs1s(bits), frs2: c_rs2s(bits), imm: cs_sd_imm(bits) }
-                }
-                0b110 => {
-                    // C.SW
-                    // translate to sw rs2', rs1', offset
-                    Op::Sw { rs1: c_rs1s(bits), rs2: c_rs2s(bits), imm: cs_sw_imm(bits) }
-                }
-                0b111 => {
-                    // C.SD
-                    // translate to sd rs2', rs1', offset
-                    Op::Sd { rs1: c_rs1s(bits), rs2: c_rs2s(bits), imm: cs_sd_imm(bits) }
-                }
-                // full case
-                _ => unreachable!(),
             }
-        }
-        0b01 => {
-            match function {
-                0b000 => {
-                    // rd = x0 is HINT
-                    // r0 = 0 is C.NOP
-                    // C.ADDI
-                    // translate to addi rd, rd, imm
-                    let rd = c_rd(bits);
-                    Op::Addi { rd, rs1: rd, imm: ci_imm(bits) }
-                }
-                0b001 => {
-                    let rd = c_rd(bits);
-                    if rd == 0 {
-                        // Reserved
-                        return Op::Illegal;
-                    }
-                    // C.ADDIW
-                    // translate to addiw rd, rd, imm
-                    Op::Addiw { rd, rs1: rd, imm: ci_imm(bits) }
-                }
-                0b010 => {
-                    // rd = x0 is HINT
-                    // C.LI
-                    // translate to addi rd, x0, imm
-                    Op::Addi { rd: c_rd(bits), rs1: 0, imm: ci_imm(bits) }
-                }
-                0b011 => {
-                    let rd = c_rd(bits);
-                    if rd == 2 {
-                        let imm = ci_addi16sp_imm(bits);
-                        if imm == 0 {
-                            // Reserved
-                            return Op::Illegal;
-                        }
-                        // C.ADDI16SP
-                        // translate to addi x2, x2, imm
-                        Op::Addi { rd: 2, rs1: 2, imm }
-                    } else {
-                        // rd = x0 is HINT
-                        // C.LUI
-                        // translate to lui rd, imm
-                        Op::Lui { rd, imm: ci_imm(bits) << 12 }
-                    }
-                }
-                0b100 => {
-                    let rs1 = c_rs1s(bits);
-                    match (bits >> 10) & 0b11 {
-                        0b00 => {
-                            // imm = 0 is HINT
-                            // C.SRLI
-                            // translate to srli rs1', rs1', imm
-                            Op::Srli { rd: rs1, rs1, imm: ci_imm(bits) & 63 }
-                        }
-                        0b01 => {
-                            // imm = 0 is HINT
-                            // C.SRAI
-                            // translate to srai rs1', rs1', imm
-                            Op::Srai { rd: rs1, rs1, imm: ci_imm(bits) & 63 }
-                        }
-                        0b10 => {
-                            // C.ANDI
-                            // translate to andi rs1', rs1', imm
-                            Op::Andi { rd: rs1, rs1, imm: ci_imm(bits) }
-                        }
-                        0b11 => {
-                            if (bits & 0x1000) == 0 {
-                                // C.SUB
-                                // C.XOR
-                                // C.OR
-                                // C.AND
-                                // translates to [OP] rs1', rs1', rs2'
-                                let rs2 = c_rs2s(bits);
-                                match (bits >> 5) & 0b11 {
-                                    0b00 => Op::Sub { rd: rs1, rs1, rs2 },
-                                    0b01 => Op::Xor { rd: rs1, rs1, rs2 },
-                                    0b10 => Op::Or { rd: rs1, rs1, rs2 },
-                                    0b11 => Op::And { rd: rs1, rs1, rs2 },
-                                    // full case
-                                    _ => unreachable!(),
-                                }
-                            } else {
-                                // C.SUBW
-                                // C.ADDW
-                                let rs2 = c_rs2s(bits);
-                                match (bits >> 5) & 0b11 {
-                                    0b00 => Op::Subw { rd: rs1, rs1, rs2 },
-                                    0b01 => Op::Addw { rd: rs1, rs1, rs2 },
-                                    _ => Op::Illegal,
-                                }
+            0b100 => {
+                let rs1 = c_rs1s(bits);
+                match (bits >> 10) & 0b11 {
+                    0b00 => Op::Srli { rd: rs1, rs1, imm: ci_imm(bits) & 63 },
+                    0b01 => Op::Srai { rd: rs1, rs1, imm: ci_imm(bits) & 63 },
+                    0b10 => Op::Andi { rd: rs1, rs1, imm: ci_imm(bits) },
+                    0b11 => {
+                        if (bits & 0x1000) == 0 {
+                            let rs2 = c_rs2s(bits);
+                            match (bits >> 5) & 0b11 {
+                                0b00 => Op::Sub { rd: rs1, rs1, rs2 },
+                                0b01 => Op::Xor { rd: rs1, rs1, rs2 },
+                                0b10 => Op::Or { rd: rs1, rs1, rs2 },
+                                0b11 => Op::And { rd: rs1, rs1, rs2 },
+
+                                _ => unreachable!(),
                             }
-                        }
-                        // full case
-                        _ => unreachable!(),
-                    }
-                }
-                0b101 => {
-                    // C.J
-                    // translate to jal x0, imm
-                    Op::Jal { rd: 0, imm: cj_imm(bits) }
-                }
-                0b110 => {
-                    // C.BEQZ
-                    // translate to beq rs1', x0, imm
-                    Op::Beq { rs1: c_rs1s(bits), rs2: 0, imm: cb_imm(bits) }
-                }
-                0b111 => {
-                    // C.BNEZ
-                    // translate to bne rs1', x0, imm
-                    Op::Bne { rs1: c_rs1s(bits), rs2: 0, imm: cb_imm(bits) }
-                }
-                // full case
-                _ => unreachable!(),
-            }
-        }
-        0b10 => {
-            match function {
-                0b000 => {
-                    // imm = 0 is HINT
-                    // rd = 0 is HINT
-                    // C.SLLI
-                    // translates to slli rd, rd, imm
-                    let rd = c_rd(bits);
-                    Op::Slli { rd, rs1: rd, imm: ci_imm(bits) & 63 }
-                }
-                0b001 => {
-                    // C.FLDSP
-                    // translate to fld rd, x2, imm
-                    Op::Fld { frd: c_rd(bits), rs1: 2, imm: ci_ldsp_imm(bits) }
-                }
-                0b010 => {
-                    let rd = c_rd(bits);
-                    if rd == 0 {
-                        // Reserved
-                        return Op::Illegal;
-                    }
-                    // C.LWSP
-                    // translate to lw rd, x2, imm
-                    Op::Lw { rd, rs1: 2, imm: ci_lwsp_imm(bits) }
-                }
-                0b011 => {
-                    let rd = c_rd(bits);
-                    if rd == 0 {
-                        // Reserved
-                        return Op::Illegal;
-                    }
-                    // C.LDSP
-                    // translate to ld rd, x2, imm
-                    Op::Ld { rd, rs1: 2, imm: ci_ldsp_imm(bits) }
-                }
-                0b100 => {
-                    let rs2 = c_rs2(bits);
-                    if (bits & 0x1000) == 0 {
-                        if rs2 == 0 {
-                            let rs1 = c_rs1(bits);
-                            if rs1 == 0 {
-                                // Reserved
-                                return Op::Illegal;
-                            }
-                            // C.JR
-                            // translate to jalr x0, rs1, 0
-                            Op::Jalr { rd: 0, rs1, imm: 0 }
                         } else {
-                            // rd = 0 is HINT
-                            // C.MV
-                            // translate to add rd, x0, rs2
-                            Op::Add { rd: c_rd(bits), rs1: 0, rs2 }
+                            let rs2 = c_rs2s(bits);
+                            match (bits >> 5) & 0b11 {
+                                0b00 => Op::Subw { rd: rs1, rs1, rs2 },
+                                0b01 => Op::Addw { rd: rs1, rs1, rs2 },
+                                _ => Op::Illegal,
+                            }
                         }
-                    } else {
+                    }
+
+                    _ => unreachable!(),
+                }
+            }
+            0b101 => Op::Jal { rd: 0, imm: cj_imm(bits) },
+            0b110 => Op::Beq { rs1: c_rs1s(bits), rs2: 0, imm: cb_imm(bits) },
+            0b111 => Op::Bne { rs1: c_rs1s(bits), rs2: 0, imm: cb_imm(bits) },
+
+            _ => unreachable!(),
+        },
+        0b10 => match function {
+            0b000 => {
+                let rd = c_rd(bits);
+                Op::Slli { rd, rs1: rd, imm: ci_imm(bits) & 63 }
+            }
+            0b001 => Op::Fld { frd: c_rd(bits), rs1: 2, imm: ci_ldsp_imm(bits) },
+            0b010 => {
+                let rd = c_rd(bits);
+                if rd == 0 {
+                    return Op::Illegal;
+                }
+
+                Op::Lw { rd, rs1: 2, imm: ci_lwsp_imm(bits) }
+            }
+            0b011 => {
+                let rd = c_rd(bits);
+                if rd == 0 {
+                    return Op::Illegal;
+                }
+
+                Op::Ld { rd, rs1: 2, imm: ci_ldsp_imm(bits) }
+            }
+            0b100 => {
+                let rs2 = c_rs2(bits);
+                if (bits & 0x1000) == 0 {
+                    if rs2 == 0 {
                         let rs1 = c_rs1(bits);
                         if rs1 == 0 {
-                            // C.EBREAK
-                            Op::Ebreak
-                        } else if rs2 == 0 {
-                            // C.JALR
-                            // translate to jalr x1, rs1, 0
-                            Op::Jalr { rd: 1, rs1, imm: 0 }
-                        } else {
-                            // rd = 0 is HINT
-                            // C.ADD
-                            // translate to add rd, rd, rs2
-                            let rd = c_rd(bits);
-                            Op::Add { rd, rs1: rd, rs2 }
+                            return Op::Illegal;
                         }
+
+                        Op::Jalr { rd: 0, rs1, imm: 0 }
+                    } else {
+                        Op::Add { rd: c_rd(bits), rs1: 0, rs2 }
+                    }
+                } else {
+                    let rs1 = c_rs1(bits);
+                    if rs1 == 0 {
+                        Op::Ebreak
+                    } else if rs2 == 0 {
+                        Op::Jalr { rd: 1, rs1, imm: 0 }
+                    } else {
+                        let rd = c_rd(bits);
+                        Op::Add { rd, rs1: rd, rs2 }
                     }
                 }
-                0b101 => {
-                    // C.FSDSP
-                    // translate to fsd rs2, x2, imm
-                    Op::Fsd { rs1: 2, frs2: c_rs2(bits), imm: css_sdsp_imm(bits) }
-                }
-                0b110 => {
-                    // C.SWSP
-                    // translate to sw rs2, x2, imm
-                    Op::Sw { rs1: 2, rs2: c_rs2(bits), imm: css_swsp_imm(bits) }
-                }
-                0b111 => {
-                    // C.SDSP
-                    // translate to sd rs2, x2, imm
-                    Op::Sd { rs1: 2, rs2: c_rs2(bits), imm: css_sdsp_imm(bits) }
-                }
-                // full case
-                _ => unreachable!(),
             }
-        }
+            0b101 => Op::Fsd { rs1: 2, frs2: c_rs2(bits), imm: css_sdsp_imm(bits) },
+            0b110 => Op::Sw { rs1: 2, rs2: c_rs2(bits), imm: css_swsp_imm(bits) },
+            0b111 => Op::Sd { rs1: 2, rs2: c_rs2(bits), imm: css_sdsp_imm(bits) },
+
+            _ => unreachable!(),
+        },
         _ => unreachable!(),
     }
 }
@@ -445,10 +314,8 @@ pub fn decode(bits: u32) -> Op {
         }};
     }
 
-    // We shouldn't see compressed ops here
     assert!(bits & 3 == 3);
 
-    // Longer ops, treat them as illegal ops
     if bits & 0x1f == 0x1f {
         return Op::Illegal;
     }
@@ -510,22 +377,17 @@ pub fn decode(bits: u32) -> Op {
                 }
                 0b110 => Op::Ori { rd, rs1, imm },
                 0b111 => Op::Andi { rd, rs1, imm },
-                // full case
+
                 _ => unreachable!(),
             }
         }
 
         /* MISC-MEM */
-        0b0001111 => {
-            match function {
-                0b000 => {
-                    // TODO Multiple types of fence
-                    Op::Fence
-                }
-                0b001 => Op::FenceI,
-                _ => Op::Illegal,
-            }
-        }
+        0b0001111 => match function {
+            0b000 => Op::Fence,
+            0b001 => Op::FenceI,
+            _ => Op::Illegal,
+        },
 
         /* OP-IMM-32 */
         0b0011011 => {
@@ -633,71 +495,65 @@ pub fn decode(bits: u32) -> Op {
         }
 
         /* OP */
-        0b0110011 => {
-            match funct7(bits) {
-                // M-extension
-                0b0000001 => match function {
-                    0b000 => Op::Mul { rd, rs1, rs2 },
-                    0b001 => Op::Mulh { rd, rs1, rs2 },
-                    0b010 => Op::Mulhsu { rd, rs1, rs2 },
-                    0b011 => Op::Mulhu { rd, rs1, rs2 },
-                    0b100 => Op::Div { rd, rs1, rs2 },
-                    0b101 => Op::Divu { rd, rs1, rs2 },
-                    0b110 => Op::Rem { rd, rs1, rs2 },
-                    0b111 => Op::Remu { rd, rs1, rs2 },
-                    // full case
-                    _ => unreachable!(),
-                },
-                0b0000000 => match function {
-                    0b000 => Op::Add { rd, rs1, rs2 },
-                    0b001 => Op::Sll { rd, rs1, rs2 },
-                    0b010 => Op::Slt { rd, rs1, rs2 },
-                    0b011 => Op::Sltu { rd, rs1, rs2 },
-                    0b100 => Op::Xor { rd, rs1, rs2 },
-                    0b101 => Op::Srl { rd, rs1, rs2 },
-                    0b110 => Op::Or { rd, rs1, rs2 },
-                    0b111 => Op::And { rd, rs1, rs2 },
-                    // full case
-                    _ => unreachable!(),
-                },
-                0b0100000 => match function {
-                    0b000 => Op::Sub { rd, rs1, rs2 },
-                    0b101 => Op::Sra { rd, rs1, rs2 },
-                    _ => Op::Illegal,
-                },
+        0b0110011 => match funct7(bits) {
+            0b0000001 => match function {
+                0b000 => Op::Mul { rd, rs1, rs2 },
+                0b001 => Op::Mulh { rd, rs1, rs2 },
+                0b010 => Op::Mulhsu { rd, rs1, rs2 },
+                0b011 => Op::Mulhu { rd, rs1, rs2 },
+                0b100 => Op::Div { rd, rs1, rs2 },
+                0b101 => Op::Divu { rd, rs1, rs2 },
+                0b110 => Op::Rem { rd, rs1, rs2 },
+                0b111 => Op::Remu { rd, rs1, rs2 },
+
+                _ => unreachable!(),
+            },
+            0b0000000 => match function {
+                0b000 => Op::Add { rd, rs1, rs2 },
+                0b001 => Op::Sll { rd, rs1, rs2 },
+                0b010 => Op::Slt { rd, rs1, rs2 },
+                0b011 => Op::Sltu { rd, rs1, rs2 },
+                0b100 => Op::Xor { rd, rs1, rs2 },
+                0b101 => Op::Srl { rd, rs1, rs2 },
+                0b110 => Op::Or { rd, rs1, rs2 },
+                0b111 => Op::And { rd, rs1, rs2 },
+
+                _ => unreachable!(),
+            },
+            0b0100000 => match function {
+                0b000 => Op::Sub { rd, rs1, rs2 },
+                0b101 => Op::Sra { rd, rs1, rs2 },
                 _ => Op::Illegal,
-            }
-        }
+            },
+            _ => Op::Illegal,
+        },
 
         /* LUI */
         0b0110111 => Op::Lui { rd, imm: u_imm(bits) },
 
         /* OP-32 */
-        0b0111011 => {
-            match funct7(bits) {
-                // M-extension
-                0b0000001 => match function {
-                    0b000 => Op::Mulw { rd, rs1, rs2 },
-                    0b100 => Op::Divw { rd, rs1, rs2 },
-                    0b101 => Op::Divuw { rd, rs1, rs2 },
-                    0b110 => Op::Remw { rd, rs1, rs2 },
-                    0b111 => Op::Remuw { rd, rs1, rs2 },
-                    _ => Op::Illegal,
-                },
-                0b0000000 => match function {
-                    0b000 => Op::Addw { rd, rs1, rs2 },
-                    0b001 => Op::Sllw { rd, rs1, rs2 },
-                    0b101 => Op::Srlw { rd, rs1, rs2 },
-                    _ => Op::Illegal,
-                },
-                0b0100000 => match function {
-                    0b000 => Op::Subw { rd, rs1, rs2 },
-                    0b101 => Op::Sraw { rd, rs1, rs2 },
-                    _ => Op::Illegal,
-                },
+        0b0111011 => match funct7(bits) {
+            0b0000001 => match function {
+                0b000 => Op::Mulw { rd, rs1, rs2 },
+                0b100 => Op::Divw { rd, rs1, rs2 },
+                0b101 => Op::Divuw { rd, rs1, rs2 },
+                0b110 => Op::Remw { rd, rs1, rs2 },
+                0b111 => Op::Remuw { rd, rs1, rs2 },
                 _ => Op::Illegal,
-            }
-        }
+            },
+            0b0000000 => match function {
+                0b000 => Op::Addw { rd, rs1, rs2 },
+                0b001 => Op::Sllw { rd, rs1, rs2 },
+                0b101 => Op::Srlw { rd, rs1, rs2 },
+                _ => Op::Illegal,
+            },
+            0b0100000 => match function {
+                0b000 => Op::Subw { rd, rs1, rs2 },
+                0b101 => Op::Sraw { rd, rs1, rs2 },
+                _ => Op::Illegal,
+            },
+            _ => Op::Illegal,
+        },
 
         /* MADD */
         0b1000011 => match funct7(bits) & 3 {
@@ -880,39 +736,35 @@ pub fn decode(bits: u32) -> Op {
         0b1101111 => Op::Jal { rd, imm: j_imm(bits) },
 
         /* SYSTEM */
-        0b1110011 => {
-            match function {
-                0b000 => match bits {
-                    0x73 => Op::Ecall,
-                    0x100073 => Op::Ebreak,
-                    0x30200073 => Op::Mret,
-                    0x10200073 => Op::Sret,
-                    0x10500073 => Op::Wfi,
-                    bits if rd == 0 && funct7(bits) == 0b0001001 => Op::SfenceVma { rs1, rs2 },
-                    _ => Op::Illegal,
-                },
-                0b100 => Op::Illegal,
-                _ => {
-                    // Otherwise this is CSR instruction
-                    let csr = super::Csr(csr(bits));
-                    // For CSRRS, CSRRC, CSRRSI, CSRRCI, rs1 = 0 means readonly.
-                    // If the CSR is readonly while we try to write it, it is an exception.
-                    let readonly = function & 0b010 != 0 && rs1 == 0;
-                    if csr.readonly() && !readonly {
-                        return Op::Illegal;
-                    }
-                    match function {
-                        0b001 => Op::Csrrw { rd, rs1, csr },
-                        0b010 => Op::Csrrs { rd, rs1, csr },
-                        0b011 => Op::Csrrc { rd, rs1, csr },
-                        0b101 => Op::Csrrwi { rd, imm: rs1, csr },
-                        0b110 => Op::Csrrsi { rd, imm: rs1, csr },
-                        0b111 => Op::Csrrci { rd, imm: rs1, csr },
-                        _ => unreachable!(),
-                    }
+        0b1110011 => match function {
+            0b000 => match bits {
+                0x73 => Op::Ecall,
+                0x100073 => Op::Ebreak,
+                0x30200073 => Op::Mret,
+                0x10200073 => Op::Sret,
+                0x10500073 => Op::Wfi,
+                bits if rd == 0 && funct7(bits) == 0b0001001 => Op::SfenceVma { rs1, rs2 },
+                _ => Op::Illegal,
+            },
+            0b100 => Op::Illegal,
+            _ => {
+                let csr = super::Csr(csr(bits));
+
+                let readonly = function & 0b010 != 0 && rs1 == 0;
+                if csr.readonly() && !readonly {
+                    return Op::Illegal;
+                }
+                match function {
+                    0b001 => Op::Csrrw { rd, rs1, csr },
+                    0b010 => Op::Csrrs { rd, rs1, csr },
+                    0b011 => Op::Csrrc { rd, rs1, csr },
+                    0b101 => Op::Csrrwi { rd, imm: rs1, csr },
+                    0b110 => Op::Csrrsi { rd, imm: rs1, csr },
+                    0b111 => Op::Csrrci { rd, imm: rs1, csr },
+                    _ => unreachable!(),
                 }
             }
-        }
+        },
         _ => Op::Illegal,
     }
 }
@@ -923,7 +775,6 @@ mod tests {
 
     #[test]
     fn test_fence_future_compatibility() {
-        // Unsupported FM, RS1, RD must be ignore for future compatiblity.
         let future = decode(0b1111_1111_1111_11111_000_11111_0001111);
         let current = decode(0b0000_1111_1111_00000_000_00000_0001111);
         assert_eq!(unsafe { std::mem::transmute::<_, u64>(future) }, unsafe {
@@ -935,7 +786,6 @@ mod tests {
     fn test_addi4spn_signedness() {
         let op = decode_compressed(0b000_10_1010_0_1_000_00);
         assert!(match op {
-            // Make sure the immediate is correctly decoded as unsigned.
             Op::Addi { rd: 8, rs1: 2, imm: 0b1010101000 } => true,
             _ => false,
         });

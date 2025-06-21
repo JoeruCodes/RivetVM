@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
 use crate::{
-    constraints::{lang_operand_to_air_expression, AirExpression, ResolveConstraint, RowOffset},
+    constraints::{
+        lang_operand_to_air_expression, AirExpression, AirTraceVariable, ResolveConstraint,
+        RowOffset,
+    },
     ctx::AirGenContext,
     ConstraintSystemVariable, Operand, StructuredAirConstraint,
 };
@@ -22,11 +25,22 @@ impl ResolveConstraint for ReturnAddress {
         phi_condition_map: &HashMap<(String, String), ConstraintSystemVariable>,
         switch_instructions: &Vec<StructuredAirConstraint>,
     ) {
-        let operand1_expr = lang_operand_to_air_expression(self.operand1);
-        let operand2_expr = lang_operand_to_air_expression(self.operand2);
-        let result_expr =
-            AirExpression::Trace(super::AirTraceVariable(self.result.0), RowOffset::Current);
+        let reg_col_opt = ctx.col_for_ssa(self.result);
 
-        constraints.push((operand1_expr + operand2_expr) - result_expr);
+        let dest_col = ctx.new_aux_variable();
+        ctx.bind_ssa_var(self.result, dest_col.0);
+
+        let operand1_expr = ctx.expr_for_operand(self.operand1);
+        let operand2_expr = ctx.expr_for_operand(self.operand2);
+        let result_expr = AirExpression::Trace(dest_col, RowOffset::Current);
+
+        constraints.push((operand1_expr + operand2_expr) - result_expr.clone());
+
+        if let Some(reg_col) = reg_col_opt {
+            let selector = ctx.new_row_selector();
+            let reg_expr = AirExpression::Trace(AirTraceVariable(reg_col), RowOffset::Current);
+            let diff = AirExpression::Sub(Box::new(result_expr), Box::new(reg_expr));
+            ctx.add_row_gated_constraint(selector, diff);
+        }
     }
 }

@@ -1,8 +1,5 @@
 #![feature(test)]
 
-//! This benchmark tests that fiber::Mutex and parking_lot::Mutex have no significant performance
-//! difference in multithreaded contexts.
-
 extern crate test;
 
 use fiber::{FiberContext, FiberGroup, RawRwLock, RwLock};

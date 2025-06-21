@@ -8,6 +8,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 use std::path::Path;
 
+use ro_cell::RoCell;
+
 const EI_CLASS: usize = 0x4;
 const PF_R: u32 = 0x4;
 const PF_W: u32 = 0x2;
@@ -66,9 +68,9 @@ impl Loader {
     pub fn new(file: &Path) -> std::io::Result<Loader> {
         println!("Loading file: {}", file.display());
         let file = File::open(super::syscall::translate_path(file))?;
-        // Get the size of the file.
+
         let file_size = file.metadata()?.len();
-        // Map the file to memory.
+
         println!("Mapping file to memory");
         let memory = unsafe {
             libc::mmap(
@@ -92,7 +94,6 @@ impl Loader {
     pub fn is_elf(&self) -> bool {
         let header = self.ehdr();
 
-        // Check the ELF magic numbers
         if &header.e_ident[0..4] != b"\x7FELF" {
             return false;
         }
@@ -103,23 +104,18 @@ impl Loader {
     pub fn validate_elf(&self) -> Result<(), &'static str> {
         let header = self.ehdr();
 
-        // We can only proceed with executable or dynamic binary.
         if header.e_type != ET_EXEC && header.e_type != ET_DYN {
             return Err("the binary is not executable.");
         }
 
-        // Check that the ELF is for RISC-V
         if header.e_machine != EM_RISCV {
             return Err("the binary is not for RISC-V.");
         }
 
-        // Check that the ELF is ELF64
         if header.e_ident[EI_CLASS] != 2 {
             return Err("the binary is not ELF64.");
         }
 
-        // Make sure we are not loading a kernel - kernel must be specified using config files.
-        // We use a very simple heuristics here: user-space programs usually isn't located that high.
         if (header.e_entry as i64) < 0 {
             return Err("config must be used for full-system emulation");
         }
@@ -151,10 +147,48 @@ impl Loader {
         None
     }
 
+    fn find_symbol(&self, name: &str) -> Option<u64> {
+        unsafe {
+            let ehdr = self.ehdr();
+
+            let shdr_base = self.memory as usize + ehdr.e_shoff as usize;
+            for i in 0..ehdr.e_shnum {
+                let shdr = &*((shdr_base + i as usize * ehdr.e_shentsize as usize)
+                    as *const libc::Elf64_Shdr);
+
+                const SHT_SYMTAB: u32 = 2;
+                const SHT_DYNSYM: u32 = 11;
+                if shdr.sh_type != SHT_SYMTAB && shdr.sh_type != SHT_DYNSYM {
+                    continue;
+                }
+
+                let strtab_shdr = &*((shdr_base + shdr.sh_link as usize * ehdr.e_shentsize as usize)
+                    as *const libc::Elf64_Shdr);
+                let strtab = (self.memory as usize + strtab_shdr.sh_offset as usize) as *const u8;
+
+                let num_syms = shdr.sh_size as usize / std::mem::size_of::<libc::Elf64_Sym>();
+                let symtab_ptr =
+                    (self.memory as usize + shdr.sh_offset as usize) as *const libc::Elf64_Sym;
+                for idx in 0..num_syms {
+                    let sym = &*symtab_ptr.add(idx);
+                    if sym.st_name == 0 {
+                        continue;
+                    }
+                    let c_name = CStr::from_ptr(strtab.add(sym.st_name as usize) as *const i8);
+                    if let Ok(n) = c_name.to_str() {
+                        if n == name {
+                            return Some(sym.st_value);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     unsafe fn load_image(&self, load_addr: &mut u64, brk: &mut u64) -> u64 {
         let ehdr = self.ehdr();
 
-        // Scan the bounds of the image.
         let mut loaddr = u64::max_value();
         let mut hiaddr = 0;
         for h in self.phdr() {
@@ -167,13 +201,12 @@ impl Loader {
         loaddr &= !4095;
         hiaddr = (hiaddr + 4095) & !4095;
 
-        // For dynamic binaries, we need to allocate a location for it.
-        let bias = if ehdr.e_type == ET_DYN {
+        let bias = {
             let map = libc::mmap(
                 std::ptr::null_mut(),
                 (hiaddr - loaddr) as _,
                 libc::PROT_NONE,
-                libc::MAP_PRIVATE | libc::MAP_ANON,
+                libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_32BIT,
                 -1,
                 0,
             );
@@ -181,24 +214,10 @@ impl Loader {
                 panic!("mmap failed while loading");
             }
             map as usize as u64 - loaddr
-        } else {
-            let map = libc::mmap(
-                loaddr as usize as _,
-                (hiaddr - loaddr) as _,
-                libc::PROT_NONE,
-                libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_FIXED,
-                -1,
-                0,
-            );
-            if map == libc::MAP_FAILED {
-                panic!("mmap failed while loading");
-            }
-            0
         };
 
         for h in self.phdr() {
             if h.p_type == libc::PT_LOAD {
-                // size in memory cannot be smaller than size in file
                 if h.p_filesz > h.p_memsz {
                     panic!("invalid elf file: constraint p_filesz <= p_memsz is not satisified");
                 }
@@ -221,12 +240,10 @@ impl Loader {
                     prot |= libc::PROT_READ
                 };
 
-                // First page is not aligned, we need t adjust it so that it is aligned.
                 if h.p_vaddr != page_start {
                     file_offset -= h.p_vaddr - page_start;
                 }
 
-                // Map until map_end.
                 if map_end != page_start {
                     let map = libc::mmap(
                         (bias + page_start) as usize as _,
@@ -241,19 +258,15 @@ impl Loader {
                     }
                 }
 
-                // For those beyond map_end, we need those beyond filesz to be zero. As we know the memory location will
-                // initially be zero, we just make them writable and copy the remaining part across.
                 if map_end != page_end {
                     let rem_ptr = (bias + map_end) as usize as _;
 
-                    // Make it writable.
                     libc::mprotect(
                         rem_ptr,
                         (page_end - map_end) as usize,
                         libc::PROT_READ | libc::PROT_WRITE,
                     );
 
-                    // Copy across.
                     libc::memcpy(
                         rem_ptr,
                         (self.memory as usize
@@ -262,27 +275,23 @@ impl Loader {
                         (vaddr_map_end - map_end) as usize,
                     );
 
-                    // Change protection if it shouldn't be writable.
                     if (h.p_flags & PF_W) == 0 {
                         libc::mprotect(rem_ptr, (page_end - map_end) as usize, prot);
                     }
                 }
 
-                // Set brk to the address past the last program segment.
                 if vaddr_end > *brk {
                     *brk = vaddr_end;
                 }
             }
         }
 
-        // Return information needed by the caller.
         *load_addr = bias + loaddr;
         *brk = bias + ((*brk + 4095) & !4095);
         bias + ehdr.e_entry
     }
 
     pub unsafe fn load_kernel(&self, load_addr: u64) -> u64 {
-        // Scan the bounds of the image.
         let mut loaddr = u64::max_value();
         let mut hiaddr = 0;
         for h in self.phdr() {
@@ -297,19 +306,16 @@ impl Loader {
 
         for h in self.phdr() {
             if h.p_type == libc::PT_LOAD {
-                // size in memory cannot be smaller than size in file
                 if h.p_filesz > h.p_memsz {
                     panic!("invalid elf file: constraint p_filesz <= p_memsz is not satisified");
                 }
 
-                // Copy across.
                 libc::memcpy(
                     (h.p_vaddr - loaddr + load_addr) as usize as _,
                     (self.memory as usize + h.p_offset as usize) as _,
                     h.p_filesz as usize,
                 );
 
-                // Zero-out the rest
                 libc::memset(
                     (h.p_vaddr + h.p_filesz - loaddr + load_addr) as usize as _,
                     0,
@@ -328,7 +334,6 @@ impl Loader {
         let mut actual_entry = entry;
         let mut interp_addr = 0;
 
-        // If an interpreter exists, load it as well.
         if let Some(interp) = self.find_interpreter() {
             let interp_file = Loader::new(interp.as_ref()).unwrap();
             interp_file.validate_elf().unwrap();
@@ -339,9 +344,16 @@ impl Loader {
 
             let mut interp_brk = 0;
             actual_entry = interp_file.load_image(&mut interp_addr, &mut interp_brk);
+
+            if crate::get_flags().prv == 0 {
+                if let Some(sym_val) = self.find_symbol("__libc_start_main") {
+                    let libc_start_runtime = sym_val + (load_addr - (sym_val & !0xfff));
+                    let return_pc = libc_start_runtime + 0x14;
+                    RoCell::replace(&super::LIBC_RETURN_PC, return_pc);
+                }
+            }
         }
 
-        // Setup brk.
         brk = (brk + 4095) & !4095;
         super::syscall::init_brk(brk);
 
@@ -350,7 +362,6 @@ impl Loader {
             *(*sp as usize as *mut u64) = value;
         };
 
-        // Setup auxillary vectors.
         let header = &*(self.memory as *const libc::Elf64_Ehdr);
         push(load_addr + header.e_phoff);
         push(abi::AT_PHDR);
@@ -381,7 +392,6 @@ pub unsafe fn load(
     ctxs: &mut [&mut Context],
 ) {
     if crate::get_flags().prv == 0 {
-        // Set sp to be the highest possible address.
         let mut sp: u64 = 0x7fff0000;
         let map = libc::mmap(
             (sp - 0x800000) as usize as _,
@@ -400,11 +410,9 @@ pub unsafe fn load(
             std::slice::from_raw_parts_mut(*sp as usize as _, size)
         };
 
-        // This contains (guest) pointers to all argument strings annd environment variables.
         let mut env_pointers = Vec::new();
         let mut arg_pointers = Vec::new();
 
-        // Copy all environment variables into guest user space.
         for (var_k, var_v) in std::env::vars() {
             sp_alloc(&mut sp, 1)[0] = 0;
             sp_alloc(&mut sp, var_v.len()).copy_from_slice(var_v.as_bytes());
@@ -413,14 +421,12 @@ pub unsafe fn load(
             env_pointers.push(sp);
         }
 
-        // Copy all arguments into guest user space.
         for arg in args {
             sp_alloc(&mut sp, 1)[0] = 0;
             sp_alloc(&mut sp, arg.len()).copy_from_slice(arg.as_bytes());
             arg_pointers.push(sp);
         }
 
-        // Align the stack to 8-byte boundary.
         sp &= !7;
 
         let push = |sp: &mut u64, value: u64| {
@@ -428,7 +434,6 @@ pub unsafe fn load(
             *(*sp as usize as *mut u64) = value;
         };
 
-        // Random data
         let mut rng = rand::rngs::OsRng;
         push(&mut sp, rng.next_u64());
         push(&mut sp, rng.next_u64());
@@ -436,11 +441,9 @@ pub unsafe fn load(
         push(&mut sp, rng.next_u64());
         let random_data = sp;
 
-        // Setup auxillary vectors.
         push(&mut sp, 0);
         push(&mut sp, abi::AT_NULL);
 
-        // Initialize context, and set up ELF-specific auxillary vectors.
         let start = file.load_elf(&mut sp);
 
         push(&mut sp, libc::getuid() as _);
@@ -458,26 +461,23 @@ pub unsafe fn load(
         push(&mut sp, random_data);
         push(&mut sp, abi::AT_RANDOM);
 
-        // fill in environ, last is nullptr
         push(&mut sp, 0);
         for v in env_pointers.into_iter().rev() {
             push(&mut sp, v)
         }
 
-        // fill in argv, last is nullptr
         push(&mut sp, 0);
         for &v in arg_pointers.iter().rev() {
             push(&mut sp, v)
         }
 
-        // set argc
         push(&mut sp, arg_pointers.len() as _);
 
         let ctx = &mut ctxs[0];
         ctx.pc = start;
-        // sp
+
         ctx.registers[2] = sp;
-        // libc adds this value into exit hook, so we need to make sure it is zero.
+
         ctx.registers[10] = 0;
         ctx.prv = 0;
     } else {
@@ -500,9 +500,8 @@ pub unsafe fn load(
         target.copy_from_slice(&device_tree[..]);
 
         for ctx in ctxs {
-            // a0 is the current hartid
             ctx.registers[10] = ctx.hartid;
-            // a1 should be the device tree
+
             ctx.registers[11] = 0x40000000 + size;
             ctx.pc = 0x40000000;
             ctx.prv = 1;

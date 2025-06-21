@@ -3,8 +3,6 @@ use super::Operand;
 use core::fmt;
 
 impl Op {
-    /// Get the mnemonic for this op. This method looks at discriminant only, so it will print
-    /// cmovcc/jcc/setcc instead of actual condition code.
     pub fn mnemonic(&self) -> &'static str {
         match *self {
             Op::Illegal { .. } => "illegal",
@@ -53,9 +51,7 @@ impl Op {
         }
     }
 
-    /// Print the instruction with optional next pc information.
     fn print(&self, fmt: &mut fmt::Formatter, npc: Option<u64>) -> fmt::Result {
-        // Print mnemonic
         match self {
             Op::Cmovcc(_, _, cc) => write!(fmt, "cmov{:-4}", cc),
             Op::Jcc(_, cc) => write!(fmt, "j{:-7}", cc),
@@ -120,7 +116,6 @@ impl Op {
         Ok(())
     }
 
-    /// Pretty-print the assembly with program counter and binary instrumentation
     pub fn pretty_print<'a>(&'a self, pc: u64, code: &'a [u8]) -> impl fmt::Display + 'a {
         Disasm { pc, code, op: self }
     }

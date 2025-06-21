@@ -67,19 +67,31 @@ impl ResolveConstraint for AtomicRMW {
         _phi_condition_map: &HashMap<(String, String), ConstraintSystemVariable>,
         _switch_instructions: &Vec<StructuredAirConstraint>,
     ) {
-        let old_val_expr =
-            AirExpression::Trace(AirTraceVariable(self.result.0), RowOffset::Current);
-        let arg_val_expr = lang_operand_to_air_expression(self.value);
+        let reg_col_opt = ctx.col_for_ssa(self.result);
+
+        let dest_col = ctx.new_aux_variable();
+        ctx.bind_ssa_var(self.result, dest_col.0);
+
+        let old_val_expr = AirExpression::Trace(dest_col, RowOffset::Current);
+        let arg_val_expr = ctx.expr_for_operand(self.value);
 
         let new_val_expr = match self.operation {
             RmwBinOp::Add => old_val_expr + arg_val_expr,
             RmwBinOp::Sub => old_val_expr - arg_val_expr,
 
-            _ => lang_operand_to_air_expression(self.value),
+            _ => ctx.expr_for_operand(self.value),
         };
 
         let written_val_var = ctx.new_aux_variable();
         let written_val_expr = AirExpression::Trace(written_val_var, RowOffset::Current);
-        constraints.push(written_val_expr - new_val_expr);
+        constraints.push(written_val_expr - new_val_expr.clone());
+
+        if let Some(reg_col) = reg_col_opt {
+            let sel = ctx.new_row_selector();
+            let reg_expr = AirExpression::Trace(AirTraceVariable(reg_col), RowOffset::Current);
+            let dest_expr = AirExpression::Trace(dest_col.clone(), RowOffset::Current);
+            let diff = AirExpression::Sub(Box::new(dest_expr), Box::new(reg_expr));
+            ctx.add_row_gated_constraint(sel, diff);
+        }
     }
 }

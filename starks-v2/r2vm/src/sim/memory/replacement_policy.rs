@@ -6,31 +6,14 @@ pub trait ReplacementPolicy {
     where
         Self: Sized;
 
-    /// Insert an new entry.
     fn insert(&mut self, index: usize);
 
-    /// Mark an entry as invalidate.
     fn invalidate(&mut self, index: usize);
 
-    /// Mark an entry as recently accessed.
-    ///
-    /// Due to the natural of R2VM's design, not all memory requests would reach the memory model,
-    /// thus the replacement policy. If the policy would need `touch` to work, it must invalidate
-    /// relevant entries from L0.
-    ///
-    /// To support these the ReplacementPolicy would need to report if they would want to capture
-    /// accesses to certain indexes via `indexes_to_capture`. We currently haven't implemented
-    /// the functionality just yet.
     fn touch(&mut self, index: usize);
 
-    /// Select an entry for eviction
     fn select(&mut self) -> usize;
 
-    /// Retrieve the indexes that `touch`ing them upon access is required to maintain simulation
-    /// accuracy.
-    ///
-    /// This method only needs to report a difference. It only needs to report those indexes
-    /// that are newly required after their last `insert` or `touch`.
     fn indexes_to_capture(&mut self) -> Vec<usize> {
         Vec::new()
     }
@@ -81,7 +64,6 @@ mod fifo {
     use super::ReplacementPolicy;
 
     pub struct Fifo {
-        // TODO: Optimise memory usage with bitset
         valid: Box<[bool]>,
         ptr: usize,
     }

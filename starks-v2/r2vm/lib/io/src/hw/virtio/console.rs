@@ -13,11 +13,9 @@ fn size_to_config(col: u16, row: u16) -> [u8; 4] {
     [col[0], col[1], row[0], row[1]]
 }
 
-/// A virtio console device.
 pub struct Console {
     status: u32,
-    /// Whether sizing feature should be available. We allow it to be turned off because sometimes
-    /// STDIN is not tty.
+
     resize: bool,
     rx_handle: Option<AbortHandle>,
     resize_handle: Option<AbortHandle>,
@@ -28,7 +26,7 @@ pub struct Console {
 struct Inner {
     console: Box<dyn Serial>,
     irq: Box<dyn IrqPin>,
-    // Keep config with whether it has changed
+
     config: Mutex<([u8; 4], bool)>,
 }
 
@@ -40,9 +38,6 @@ impl Drop for Console {
 }
 
 impl Console {
-    /// Create a virtio console device.
-    ///
-    /// Parameter `resize` may be used to turn resizing detection on or off.
     pub fn new(
         ctx: Arc<dyn RuntimeContext>,
         irq: Box<dyn IrqPin>,
@@ -65,8 +60,6 @@ impl Console {
             (0, 0)
         };
 
-        // Mark the config changed by default so the driver will poll
-        // the size from the very beginning.
         let config = Mutex::new((size_to_config(col, row), resize));
         let inner = Arc::new(Inner { console, irq, config });
         let mut ret =

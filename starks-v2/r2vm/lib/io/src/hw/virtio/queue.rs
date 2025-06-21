@@ -6,11 +6,10 @@ use std::sync::Arc;
 
 const VIRTQ_DESC_F_NEXT: u16 = 1;
 const VIRTQ_DESC_F_WRITE: u16 = 2;
-// We don't support indirect yet
+
 #[allow(dead_code)]
 const VIRTQ_DESC_F_INDIRECT: u16 = 4;
 
-/// Error when trying to take buffers from a virtio queue that is not ready.
 pub struct QueueNotReady;
 
 #[repr(C)]
@@ -22,7 +21,6 @@ struct VirtqDesc {
     next: u16,
 }
 
-/// Queue structures shared by both virtio and the device
 pub(super) struct QueueInner {
     pub ready: bool,
     pub num: u16,
@@ -54,7 +52,6 @@ impl QueueInner {
     }
 }
 
-/// Safe abstraction of a virtio queue.
 pub struct Queue {
     inner: Arc<Mutex<QueueInner>>,
     dma_ctx: Arc<dyn DmaContext>,
@@ -73,15 +70,10 @@ impl Queue {
         }
     }
 
-    /// Try to get a buffer from the available ring.
-    ///
-    /// If there are no new buffers, `None` will be returned. If the queue is not ready,
-    /// trying to take an item from it will cause `Err(QueueNotReady)` to be returned.
     pub async fn try_take(&mut self) -> Result<Option<Buffer>, QueueNotReady> {
         let (num, desc_addr, avail_addr) = {
             let guard = self.inner.lock();
 
-            // If the queue is not ready, trying to take item from it can cause segfault.
             if !guard.ready {
                 return Err(QueueNotReady);
             }
@@ -89,21 +81,15 @@ impl Queue {
             (guard.num, guard.desc_addr, guard.avail_addr)
         };
 
-        // Read the current index
         let avail_idx = self.dma_ctx.read_u16(avail_addr + 2).await;
 
-        // No extra elements in this queue
         if self.last_avail_idx == avail_idx {
             return Ok(None);
         }
 
-        // Obtain the corresponding descriptor index for a given index of available ring.
-        // Each index is 2 bytes, and there are flags and idx (2 bytes each) before the ring, so
-        // we have + 4 here.
         let idx_ptr = avail_addr + 4 + (self.last_avail_idx & (num - 1)) as u64 * 2;
         let mut idx = self.dma_ctx.read_u16(idx_ptr).await;
 
-        // Now we have obtained this descriptor, increment the index to skip over this.
         self.last_avail_idx = self.last_avail_idx.wrapping_add(1);
 
         let mut avail = BufferInner {
@@ -122,7 +108,6 @@ impl Queue {
             self.dma_ctx.dma_read(desc_addr + (idx & (num - 1)) as u64 * 16, &mut desc).await;
             let desc: VirtqDesc = unsafe { std::mem::transmute(desc) };
 
-            // Add to the corresponding buffer (read/write)
             if (desc.flags & VIRTQ_DESC_F_WRITE) == 0 {
                 avail.read.push((desc.addr, desc.len as usize));
             } else {
@@ -132,7 +117,6 @@ impl Queue {
             avail.read_len = avail.read.iter().map(|(_, len)| len).sum();
             avail.write_len = avail.write.iter().map(|(_, len)| len).sum();
 
-            // Follow the linked list until we've see a descritpro without NEXT flag.
             if (desc.flags & VIRTQ_DESC_F_NEXT) == 0 {
                 break;
             }
@@ -142,11 +126,6 @@ impl Queue {
         Ok(Some(Buffer(avail)))
     }
 
-    /// Get a buffer from the available ring.
-    ///
-    /// The future returned will only resolve when there is an buffer available.
-    /// If the queue is not ready,
-    /// trying to take an item from it will cause `Err(QueueNotReady)` to be returned.
     pub async fn take(&mut self) -> Result<Buffer, QueueNotReady> {
         loop {
             match self.try_take().await? {
@@ -160,7 +139,6 @@ impl Queue {
     }
 
     pub async fn put(&mut self, buffer: Buffer) {
-        // Get inner without invoking the `Buffer::drop`.
         let buffer = unsafe { std::mem::transmute::<_, BufferInner>(buffer) };
 
         if !Arc::ptr_eq(&buffer.queue, &self.inner) {
@@ -198,19 +176,16 @@ struct BufferInner {
     dma_ctx: Arc<dyn DmaContext>,
 }
 
-/// A buffer passed from the kernel to the virtio device.
 #[repr(transparent)]
 pub struct Buffer(BufferInner);
 
 impl Drop for Buffer {
     fn drop(&mut self) {
-        // Buffer shouldn't leak in normal operation but is possible during reset.
         warn!(target: "Mmio", "buffer leaked");
     }
 }
 
 impl Buffer {
-    /// Get the readonly part of this buffer.
     pub fn reader(&self) -> BufferReader<'_> {
         BufferReader {
             buffer: &self.0.read,
@@ -222,7 +197,6 @@ impl Buffer {
         }
     }
 
-    /// Get the write-only part of this buffer.
     pub fn writer(&mut self) -> BufferWriter<'_> {
         BufferWriter {
             buffer: &self.0.write,
@@ -235,7 +209,6 @@ impl Buffer {
         }
     }
 
-    /// Split this buffer into two halves.
     pub fn reader_writer(&mut self) -> (BufferReader<'_>, BufferWriter<'_>) {
         (
             BufferReader {
@@ -259,7 +232,6 @@ impl Buffer {
     }
 }
 
-/// Reader half of the buffer.
 pub struct BufferReader<'a> {
     buffer: &'a [(u64, usize)],
     len: usize,
@@ -272,7 +244,6 @@ pub struct BufferReader<'a> {
 impl<'a> BufferReader<'a> {
     fn seek_slice(&mut self, mut offset: usize) {
         for (i, &(_, len)) in self.buffer.iter().enumerate() {
-            // offset >= len means that this block should be completely skipped
             if offset >= len {
                 offset -= len;
                 continue;
@@ -287,13 +258,11 @@ impl<'a> BufferReader<'a> {
         self.slice_offset = 0;
     }
 
-    /// Get the length of this buffer half.
     pub fn len(&self) -> usize {
         self.len
     }
 
     pub fn seek(&mut self, new_pos: usize) -> std::io::Result<usize> {
-        // If the position changed, reset slice_idx and slice_offset
         if self.pos != new_pos {
             self.seek_slice(new_pos);
         }
@@ -347,7 +316,6 @@ impl<'a> BufferReader<'a> {
     }
 }
 
-/// Writer half of the buffer.
 pub struct BufferWriter<'a> {
     buffer: &'a [(u64, usize)],
     bytes_written: &'a mut usize,
@@ -361,7 +329,6 @@ pub struct BufferWriter<'a> {
 impl<'a> BufferWriter<'a> {
     fn seek_slice(&mut self, mut offset: usize) {
         for (i, &(_, len)) in self.buffer.iter().enumerate() {
-            // offset >= len means that this block should be completely skipped
             if offset >= len {
                 offset -= len;
                 continue;
@@ -376,13 +343,11 @@ impl<'a> BufferWriter<'a> {
         self.slice_offset = 0;
     }
 
-    /// Get the length of this buffer half.
     pub fn len(&self) -> usize {
         self.len
     }
 
     pub fn seek(&mut self, new_pos: usize) -> std::io::Result<usize> {
-        // If the position changed, reset slice_idx and slice_offset
         if self.pos != new_pos {
             self.seek_slice(new_pos);
         }

@@ -79,8 +79,7 @@ impl FileSystem for Passthrough {
         let path_str_c = CString::new(file.path.as_os_str().as_bytes()).unwrap();
         unsafe {
             let mut buf = std::mem::MaybeUninit::uninit();
-            // We use statvfs over statfs because statfs's f_fsid has type fsid_t but we need to
-            // return u64.
+
             if libc::statvfs(path_str_c.as_ptr(), buf.as_mut_ptr()) != 0 {
                 return Err(std::io::Error::last_os_error());
             }
@@ -187,15 +186,15 @@ impl FileSystem for Passthrough {
             let meta = std::fs::symlink_metadata(&path)?;
             return Ok(Some(("..".to_owned(), File { path, meta, fd: None, dir: None })));
         }
-        // Exclude . and ..
+
         let offset = offset - 2;
         let dir = file.dir.as_mut().unwrap();
-        // Need to rewind
+
         if offset < dir.1 {
             dir.0 = std::fs::read_dir(&file.path)?;
             dir.1 = 0;
         }
-        // Need to skip
+
         while offset > dir.1 {
             dir.0.next();
             dir.1 += 1;
@@ -283,9 +282,7 @@ impl FileSystem for Passthrough {
             std::fs::set_permissions(&file.path, PermissionsExt::from_mode(stat.mode))?;
         }
 
-        if valid & (0x0000_0002 | 0x0000_0004) != 0 {
-            // TODO
-        }
+        if valid & (0x0000_0002 | 0x0000_0004) != 0 {}
 
         if valid & 0x0000_0008 != 0 {
             std::fs::OpenOptions::new().write(true).open(&file.path)?.set_len(stat.size)?;
@@ -322,7 +319,6 @@ impl FileSystem for Passthrough {
             }
         }
 
-        // Update metadata
         file.meta = std::fs::symlink_metadata(&file.path)?;
 
         Ok(())

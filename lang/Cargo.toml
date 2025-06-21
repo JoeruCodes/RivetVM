@@ -3,10 +3,11 @@ name = "lang"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+# See more keys and their definitions at https:
 
 [dependencies]
 inkwell = { version = "0.6.0", features = ["llvm14-0"] } # Or choose a different LLVM version feature like "llvm17-0" if you have that installed
 sha2 = {workspace = true}
 either = "1.9.0"
 llvm-sys = "140"
+serde = { version = "1.0", features = ["derive"] }

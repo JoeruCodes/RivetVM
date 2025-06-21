@@ -1,4 +1,4 @@
-use crate::constraints::{AirExpression, RowOffset};
+use crate::constraints::{AirExpression, AirTraceVariable, RowOffset};
 use crate::utils::*;
 use crate::{constraints::ResolveConstraint, ConstraintSystemVariable, Operand};
 
@@ -19,9 +19,14 @@ impl ResolveConstraint for FpTrunc {
         phi_condition_map: &std::collections::HashMap<(String, String), ConstraintSystemVariable>,
         switch_instructions: &Vec<crate::StructuredAirConstraint>,
     ) {
+        let reg_col_opt = ctx.col_for_ssa(self.result);
+
+        let dest_col = ctx.new_aux_variable();
+        ctx.bind_ssa_var(self.result, dest_col.0);
+
         println!(
-            "  FPTRUNC: op={:?}, res={:?} (bitwidth {}) - Setting up S/E/M aux vars.",
-            self.operand, self.result, self.operand_bitwidth
+            "  FPTRUNC: op={:?}, res={:?} (dest col {:?}, bitwidth {}) - Setting up S/E/M aux vars.",
+            self.operand, self.result, dest_col, self.operand_bitwidth
         );
 
         let (s_bit_count, exp_bit_count, mant_bit_count) = match self.operand_bitwidth {
@@ -253,18 +258,24 @@ impl ResolveConstraint for FpTrunc {
             "m_nan_vs_else_fptrunc",
         );
 
-        constraints.push(AirExpression::Sub(
-            Box::new(res_s_expr),
-            Box::new(final_res_s_val),
-        ));
-        constraints.push(AirExpression::Sub(
-            Box::new(res_e_expr),
-            Box::new(final_res_e_val),
-        ));
-        constraints.push(AirExpression::Sub(
-            Box::new(res_m_expr),
-            Box::new(final_res_m_val),
-        ));
+        let res_s_final_constraint =
+            AirExpression::Sub(Box::new(res_s_expr), Box::new(final_res_s_val));
+        let res_e_final_constraint =
+            AirExpression::Sub(Box::new(res_e_expr), Box::new(final_res_e_val));
+        let res_m_final_constraint =
+            AirExpression::Sub(Box::new(res_m_expr), Box::new(final_res_m_val));
+
+        constraints.push(res_s_final_constraint);
+        constraints.push(res_e_final_constraint);
+        constraints.push(res_m_final_constraint);
         println!("      FPTRUNC: Main constraint added.");
+
+        if let Some(reg_col) = reg_col_opt {
+            let selector = ctx.new_row_selector();
+            let dest_expr = AirExpression::Trace(dest_col.clone(), RowOffset::Current);
+            let reg_expr = AirExpression::Trace(AirTraceVariable(reg_col), RowOffset::Current);
+            let diff = AirExpression::Sub(Box::new(dest_expr), Box::new(reg_expr));
+            ctx.add_row_gated_constraint(selector, diff);
+        }
     }
 }

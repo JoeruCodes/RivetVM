@@ -14,14 +14,12 @@ pub struct ReplaceableTask {
 }
 
 impl ReplaceableTask {
-    /// Create a runner and its associated task.
     pub fn new() -> (ReplaceableTask, ReplaceableFuture) {
         let inner = Arc::new(Mutex::new(ReplaceableInner { future: None, waker: None }));
         let fut = ReplaceableFuture { inner: inner.clone(), started: false };
         (ReplaceableTask { inner }, fut)
     }
 
-    /// Replace the future to run.
     pub fn replace(&self, future: Pin<Box<dyn Future<Output = ()> + Send>>) {
         let mut inner = self.inner.lock();
         inner.future = Some(future);
@@ -49,22 +47,17 @@ impl Future for ReplaceableFuture {
         let this = self.get_mut();
         let mut inner = this.inner.lock();
         if !this.started {
-            // This future hasn't started, register waker.
             this.started = true;
             inner.waker = Some(cx.waker().clone());
         } else {
-            // If waker is taken away, it means that the ReplaceableFuture is dropped entirely.
             if inner.waker.is_none() {
                 return Poll::Ready(());
             }
         }
 
-        // Take the future, because we need to release the lock.
         if let Some(mut fut) = inner.future.take() {
-            // Free up the lock to avoid deadlock.
             std::mem::drop(inner);
             if fut.as_mut().poll(cx).is_pending() {
-                // If still pending, re-insert it.
                 inner = this.inner.lock();
                 if inner.future.is_none() {
                     inner.future = Some(fut);

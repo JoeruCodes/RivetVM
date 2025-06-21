@@ -1,6 +1,5 @@
 use super::Csr;
 
-/// Ordering semantics for atomics.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Ordering {
     Relaxed = 0,
@@ -21,11 +20,6 @@ impl From<Ordering> for MemOrder {
     }
 }
 
-/// This includes all supported RISC-V ops.
-/// Ops are sorted in the following order
-/// * Canonical order of extension
-/// * Increasing base opcode number
-/// * Increasing funct3 and then funct7, or their ordering in RISC-V spec
 #[rustfmt::skip]
 #[derive(Clone, Copy, PartialEq)]
 pub enum Op {
@@ -92,10 +86,10 @@ pub enum Op {
     /* Base Opcode = NMADD */
     /* Base Opcode = OP-FP */
     /* Base Opcode = BRANCH */
-    // Note: the immediate here is the offset from `pc after - 4`, instead of
-    // `pc before`. This will make `step` function simpler by not needing a
-    // op length as input.
-    // Similar reasoning applies to JAL as well.
+    
+    
+    
+    
     Beq { rs1: u8, rs2: u8, imm: i32 },
     Bne { rs1: u8, rs2: u8, imm: i32 },
     Blt { rs1: u8, rs2: u8, imm: i32 },
@@ -248,48 +242,35 @@ pub enum Op {
 impl Op {
     pub fn can_change_control_flow(&self) -> bool {
         match self {
-            // Branch and jump instructions will definitely disrupt the control flow.
-            Op::Beq {..} |
-            Op::Bne {..} |
-            Op::Blt {..} |
-            Op::Bge {..} |
-            Op::Bltu {..} |
-            Op::Bgeu {..} |
-            Op::Jalr {..} |
-            Op::Jal {..} |
-            // Return from ecall also changes control flow.
-            Op::Mret |
-            Op::Sret |
-            // They always trigger faults
-            Op::Ecall |
-            Op::Ebreak |
-            Op::Illegal |
-            // fence.i might cause instruction cache to be invalidated. If the code executing is invalidated, then we need
-            // to stop executing, so it is safer to treat it as special instruction at the moment.
-            // sfence.vma has similar effects.
-            Op::FenceI |
-            Op::SfenceVma {..} => true,
-            // Some CSRs need special treatment
-            Op::Csrrw { csr, .. } |
-            Op::Csrrs { csr, .. } |
-            Op::Csrrc { csr, .. } |
-            Op::Csrrwi { csr, .. } |
-            Op::Csrrsi { csr, .. } |
-            Op::Csrrci { csr, .. } => match *csr {
-                // A common way of using basic blocks is to `batch' instret and pc increment. So if CSR to be accessed is
-                // instret, consider it as special.
-                Csr::Instret |
-                Csr::Instreth |
-                // SATP shouldn't belong here, but somehow Linux assumes setting SATP changes
-                // addressing mode immediately...
-                Csr::Satp => true,
+            Op::Beq { .. }
+            | Op::Bne { .. }
+            | Op::Blt { .. }
+            | Op::Bge { .. }
+            | Op::Bltu { .. }
+            | Op::Bgeu { .. }
+            | Op::Jalr { .. }
+            | Op::Jal { .. }
+            | Op::Mret
+            | Op::Sret
+            | Op::Ecall
+            | Op::Ebreak
+            | Op::Illegal
+            | Op::FenceI
+            | Op::SfenceVma { .. } => true,
+
+            Op::Csrrw { csr, .. }
+            | Op::Csrrs { csr, .. }
+            | Op::Csrrc { csr, .. }
+            | Op::Csrrwi { csr, .. }
+            | Op::Csrrsi { csr, .. }
+            | Op::Csrrci { csr, .. } => match *csr {
+                Csr::Instret | Csr::Instreth | Csr::Satp => true,
                 _ => false,
-            }
+            },
             _ => false,
         }
     }
 
-    /// Get the minimal privilege level required to execute the op
     pub fn min_prv_level(self) -> u8 {
         match self {
             Op::Csrrw { csr, .. }
@@ -304,7 +285,6 @@ impl Op {
         }
     }
 
-    /// Retrieve the RD, RS1, RS2 from the op. If the operation does not use RD, RS1 or RS2, 0 is returned.
     pub fn get_regs(self) -> (u8, u8, u8) {
         match self {
             Op::Illegal => (0, 0, 0),

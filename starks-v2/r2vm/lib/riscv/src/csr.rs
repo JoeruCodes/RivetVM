@@ -4,7 +4,6 @@ use core::fmt;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Csr(pub u16);
 
-// We want these to look like as enum values, so keep cases like this.
 #[allow(non_upper_case_globals)]
 impl Csr {
     pub const Fflags: Csr = Csr(0x001);
@@ -15,7 +14,6 @@ impl Csr {
     pub const Time: Csr = Csr(0xC01);
     pub const Instret: Csr = Csr(0xC02);
 
-    // These CSRs are Rv32I only, and they are considered invalid in RV64I
     pub const Cycleh: Csr = Csr(0xC80);
     pub const Timeh: Csr = Csr(0xC81);
     pub const Instreth: Csr = Csr(0xC82);
@@ -54,7 +52,6 @@ impl Csr {
 }
 
 impl Csr {
-    /// Get the minimal privilege level required to access the CSR
     pub fn min_prv_level(self) -> u8 {
         ((self.0 >> 8) & 0b11) as u8
     }

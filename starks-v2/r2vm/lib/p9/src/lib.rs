@@ -99,19 +99,18 @@ impl<T: FileSystem> P9Handler<T> {
         P9Handler { fs, iounit: 0, fids: FnvHashMap::default() }
     }
 
-    /// Actual fcall processing, returning Result<Fcall> to allow easier error handling.
     fn handle_fcall_internal(&mut self, fcall: Fcall) -> Result<Fcall> {
         Ok(match fcall {
             Fcall::Tlopen { fid, flags } => {
                 let file = self.fids.get_mut(&fid).unwrap();
-                // Set O_LARGEFILE to zero
+
                 self.fs.open(file, flags & !O_LARGEFILE)?;
                 let qid = file.qid();
                 Fcall::Rlopen { qid, iounit: self.iounit }
             }
             Fcall::Tlcreate { fid, name, flags, mode, gid } => {
                 let file = self.fids.get_mut(&fid).unwrap();
-                // Set O_LARGEFILE to zero
+
                 let newfile = self.fs.create(file, &name, flags & !O_LARGEFILE, mode, gid)?;
                 *file = newfile;
                 let qid = file.qid();
@@ -141,7 +140,7 @@ impl<T: FileSystem> P9Handler<T> {
                 self.fs.setattr(file, valid, attr)?;
                 Fcall::Rsetattr {}
             }
-            // We don't support xattr yet.
+
             Fcall::Txattrwalk { .. } | Fcall::Txattrcreate { .. } => {
                 return Err(std::io::Error::from_raw_os_error(libc::ENOTSUP));
             }
@@ -225,7 +224,6 @@ impl<T: FileSystem> P9Handler<T> {
                 Fcall::Rfsync {}
             }
             Fcall::Tlock { fid, r#type, flags, .. } => {
-                // Check for unknown flags
                 const P9_LOCK_FLAGS_BLOCK: u32 = 1;
                 if flags & !P9_LOCK_FLAGS_BLOCK != 0 {
                     return Err(std::io::Error::from_raw_os_error(libc::ENOTSUP));

@@ -1,5 +1,3 @@
-//! Interrupt controllers.
-
 #[cfg(feature = "intc-clint")]
 mod clint;
 #[cfg(feature = "intc-clint")]

@@ -1,11 +1,14 @@
 use crate::Field;
+use lang::ctx::RangeProofGroup;
 pub use lang::{
     constraints::{AirExpression, AirTraceVariable, RowOffset},
     ConstraintSystemVariable, IntPredicate as LangIntPredicate, Operand, StructuredAirConstraint,
 };
 use lang::{process_llvm_ir, MemoryAccessLogEntry};
+use serde_json;
 use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::path::Path;
 pub mod constraint_provider;
 pub mod memory;
 pub mod preprocessors;
@@ -25,6 +28,8 @@ pub struct GeneratedAir<F: Field> {
     pub constraints: Vec<AirExpression>,
     pub num_trace_columns: usize,
     pub memory_trace_columns: Vec<usize>,
+    pub ssa_column_map: HashMap<String, usize>,
+    pub range_proof_groups: Vec<RangeProofGroup>,
     pub _phantom_field: PhantomData<F>,
 }
 
@@ -57,6 +62,11 @@ impl AirCodegen {
                 }
 
                 let mut air_codegen = AirCodegen::new(max_var_id);
+
+                if air_codegen.ctx.next_available_trace_col < 32 {
+                    air_codegen.ctx.next_available_trace_col = 32;
+                }
+
                 println!(
                     "AIR Codegen: Context initialized with next_available_trace_col = {}.",
                     air_codegen.ctx.next_available_trace_col
@@ -95,7 +105,8 @@ impl AirCodegen {
                     memory_log.len()
                 );
 
-                let initial_next_trace_col_for_memory = air_codegen.ctx.next_available_trace_col;
+                let mem_start_col = air_codegen.ctx.next_available_trace_col.max(64);
+
                 let (
                     mut memory_air_constraints,
                     memory_trace_columns,
@@ -103,7 +114,7 @@ impl AirCodegen {
                 ) = memory::generate_memory_air_constraints(
                     &memory_log,
                     &mut air_codegen.ctx,
-                    initial_next_trace_col_for_memory,
+                    mem_start_col,
                 );
 
                 air_constraints.append(&mut memory_air_constraints);
@@ -127,17 +138,50 @@ impl AirCodegen {
                     memory_trace_columns.addr.0,
                     memory_trace_columns.val.0,
                     memory_trace_columns.is_write.0,
-                    memory_trace_columns.selector.0,
+                    memory_trace_columns.last_write_val.0,
+                    memory_trace_columns.is_first_read.0,
                 ];
+
+                let mut final_map = air_codegen.ctx.ssa_column_map().clone();
+
+                for reg_idx in 0..32 {
+                    final_map.insert(format!("reg{}", reg_idx), reg_idx);
+                }
+
+                final_map.insert("mem_clk".to_string(), memory_trace_columns.clk.0);
+                final_map.insert("mem_addr".to_string(), memory_trace_columns.addr.0);
+                final_map.insert("mem_val".to_string(), memory_trace_columns.val.0);
+                final_map.insert("mem_is_write".to_string(), memory_trace_columns.is_write.0);
+
+                final_map.insert(
+                    "mem_last_write_val".to_string(),
+                    memory_trace_columns.last_write_val.0,
+                );
+                final_map.insert(
+                    "mem_is_first_read".to_string(),
+                    memory_trace_columns.is_first_read.0,
+                );
 
                 Ok(GeneratedAir {
                     constraints: air_constraints,
                     num_trace_columns: air_codegen.ctx.next_available_trace_col,
                     memory_trace_columns: memory_trace_column_indices,
+                    ssa_column_map: final_map,
+                    range_proof_groups: air_codegen.ctx.range_proof_groups().clone(),
                     _phantom_field: PhantomData,
                 })
             }
             Err(e) => Err(format!("LLVM IR processing failed: {}", e)),
         }
+    }
+}
+
+impl<F: Field> GeneratedAir<F> {
+    pub fn write_mapping_json(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::write(path, serde_json::to_string(&self.ssa_column_map)?)
+    }
+
+    pub fn write_range_proofs_json(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::write(path, serde_json::to_string(&self.range_proof_groups)?)
     }
 }

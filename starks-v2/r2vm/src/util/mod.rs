@@ -12,9 +12,6 @@ pub trait ILog2 {
     fn log2(self) -> usize;
     fn clog2(self) -> usize;
 
-    /// Assert that the value is a power of 2, and get log2 of the current value.
-    ///
-    /// If the value is not a power of 2, calling this method will cause an abort.
     fn log2_assert(self) -> usize;
 }
 

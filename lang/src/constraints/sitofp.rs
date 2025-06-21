@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::constraints::{lang_operand_to_air_expression, AirExpression, RowOffset};
+use crate::constraints::{
+    lang_operand_to_air_expression, AirExpression, AirTraceVariable, RowOffset,
+};
 use crate::{constraints::ResolveConstraint, ConstraintSystemVariable, Operand};
 use crate::{utils::*, StructuredAirConstraint};
 
@@ -21,9 +23,14 @@ impl ResolveConstraint for SiToFp {
         phi_condition_map: &HashMap<(String, String), ConstraintSystemVariable>,
         switch_instructions: &Vec<StructuredAirConstraint>,
     ) {
+        let reg_col_opt = ctx.col_for_ssa(self.result);
+
+        let dest_col = ctx.new_aux_variable();
+        ctx.bind_ssa_var(self.result, dest_col.0);
+
         println!(
-            "  SITOFP: op={:?}, res={:?}, op_bw={}, res_bw={}",
-            self.operand, self.result, self.operand_bitwidth, self.result_bitwidth
+            "  SITOFP: op={:?}, res={:?} (dest col {:?}), op_bw={}, res_bw={}",
+            self.operand, self.result, dest_col, self.operand_bitwidth, self.result_bitwidth
         );
 
         let (s_fp_bits, e_fp_bits, m_fp_bits) = match self.result_bitwidth {
@@ -43,7 +50,7 @@ impl ResolveConstraint for SiToFp {
         let res_s_expr = AirExpression::Trace(res_s_var, RowOffset::Current);
         let res_e_expr = AirExpression::Trace(res_e_var, RowOffset::Current);
         let res_m_expr = AirExpression::Trace(res_m_var, RowOffset::Current);
-        let op_expr = lang_operand_to_air_expression(self.operand);
+        let op_expr = ctx.expr_for_operand(self.operand);
 
         let (_op_bits, op_msb_expr_opt) =
             ctx.add_signed_range_proof_constraints(op_expr.clone(), self.operand_bitwidth);
@@ -177,5 +184,13 @@ impl ResolveConstraint for SiToFp {
         ));
 
         constraints.push(remainder);
+
+        if let Some(reg_col) = reg_col_opt {
+            let sel = ctx.new_row_selector();
+            let res_expr = AirExpression::Trace(dest_col.clone(), RowOffset::Current);
+            let reg_expr = AirExpression::Trace(AirTraceVariable(reg_col), RowOffset::Current);
+            let diff = AirExpression::Sub(Box::new(res_expr), Box::new(reg_expr));
+            ctx.add_row_gated_constraint(sel, diff);
+        }
     }
 }

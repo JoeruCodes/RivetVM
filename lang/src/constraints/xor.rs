@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    constraints::{lang_operand_to_air_expression, AirExpression, ResolveConstraint, RowOffset},
+    constraints::{AirExpression, ResolveConstraint, RowOffset},
     ConstraintSystemVariable, Operand, StructuredAirConstraint,
 };
 
@@ -23,10 +23,14 @@ impl ResolveConstraint for Xor {
         phi_condition_map: &HashMap<(String, String), ConstraintSystemVariable>,
         switch_instructions: &Vec<StructuredAirConstraint>,
     ) {
-        let op1_expr = lang_operand_to_air_expression(self.operand1);
-        let op2_expr = lang_operand_to_air_expression(self.operand2);
-        let res_expr =
-            AirExpression::Trace(super::AirTraceVariable(self.result.0), RowOffset::Current);
+        let op1_expr = ctx.expr_for_operand(self.operand1);
+        let op2_expr = ctx.expr_for_operand(self.operand2);
+
+        let reg_col_opt = ctx.col_for_ssa(self.result);
+
+        let dest_col = ctx.new_aux_variable();
+        ctx.bind_ssa_var(self.result, dest_col.0);
+        let res_expr = AirExpression::Trace(dest_col, RowOffset::Current);
 
         let op1_decomped =
             ctx.add_unsigned_range_proof_constraints(op1_expr.clone(), self.operand_bitwidth);
@@ -34,7 +38,7 @@ impl ResolveConstraint for Xor {
         let op2_decomped =
             ctx.add_unsigned_range_proof_constraints(op2_expr.clone(), self.operand_bitwidth);
         let res_decomped =
-            ctx.add_unsigned_range_proof_constraints(res_expr, self.operand_bitwidth);
+            ctx.add_unsigned_range_proof_constraints(res_expr.clone(), self.operand_bitwidth);
 
         let final_constaints = op1_decomped
             .into_iter()
@@ -57,5 +61,13 @@ impl ResolveConstraint for Xor {
             });
 
         constraints.extend(final_constaints);
+
+        if let Some(reg_col) = reg_col_opt {
+            use crate::constraints::{AirExpression, AirTraceVariable};
+            let selector_expr = ctx.new_row_selector();
+            let reg_expr = AirExpression::Trace(AirTraceVariable(reg_col), RowOffset::Current);
+            let eq_expr = AirExpression::Sub(Box::new(res_expr.clone()), Box::new(reg_expr));
+            ctx.add_row_gated_constraint(selector_expr, eq_expr);
+        }
     }
 }

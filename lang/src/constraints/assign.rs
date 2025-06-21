@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    constraints::{lang_operand_to_air_expression, AirExpression, ResolveConstraint},
+    constraints::{AirExpression, ResolveConstraint, RowOffset},
     ConstraintSystemVariable, Operand, StructuredAirConstraint,
 };
 
@@ -16,15 +16,15 @@ impl ResolveConstraint for Assign {
     fn resolve(
         &self,
         constraints: &mut Vec<super::AirExpression>,
-        _ctx: &mut crate::ctx::AirGenContext,
+        ctx: &mut crate::ctx::AirGenContext,
         _phi_condition_map: &HashMap<(String, String), ConstraintSystemVariable>,
         _switch_instructions: &Vec<StructuredAirConstraint>,
     ) {
-        let dest_expr = AirExpression::Trace(
-            super::AirTraceVariable(self.dest.0),
-            super::RowOffset::Current,
-        );
-        let src_expr = lang_operand_to_air_expression(self.src);
+        let dest_col = ctx.new_aux_variable();
+        ctx.bind_ssa_var(self.dest, dest_col.0);
+        let dest_expr =
+            AirExpression::Trace(super::AirTraceVariable(dest_col.0), RowOffset::Current);
+        let src_expr = ctx.expr_for_operand(self.src);
         let final_expr = AirExpression::Sub(Box::new(dest_expr), Box::new(src_expr));
         constraints.push(final_expr);
     }

@@ -8,7 +8,6 @@ fn return_true() -> bool {
     true
 }
 
-/// Specifies which particular address is to be used for an IO device
 #[derive(Debug, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct DeviceConfig<T> {
@@ -43,12 +42,9 @@ impl Default for ConsoleType {
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ConsoleConfig {
-    /// Whether a virtio console device should be exposed. Note that under current implementation,
-    /// sbi_get_char will always produce -1 after virtio is initialised.
     #[cfg_attr(feature = "serde", serde(default))]
     pub r#type: ConsoleType,
 
-    /// Whether resizing feature should be enabled. Only useful when virtio is enabled.
     #[cfg_attr(feature = "serde", serde(default = "return_true"))]
     pub resize: bool,
 }
@@ -62,11 +58,9 @@ impl Default for ConsoleConfig {
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct DriveConfig {
-    /// Whether changes should be written back to the file.
     #[cfg_attr(feature = "serde", serde(default))]
     pub shadow: bool,
 
-    /// Path to backing file.
     pub path: PathBuf,
 }
 
@@ -94,10 +88,8 @@ pub struct RandomConfig {
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ShareConfig {
-    /// 9p sharing tag
     pub tag: String,
 
-    /// Path to the shared directory
     pub path: PathBuf,
 }
 
@@ -117,17 +109,13 @@ pub enum ForwardProtocol {
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct ForwardConfig {
-    /// The protocol to forward.
     pub protocol: ForwardProtocol,
 
-    /// The IP address that host listens to.
     #[cfg_attr(feature = "serde", serde(default = "default_host_addr"))]
     pub host_addr: Ipv4Addr,
 
-    /// The port number that host listens to.
     pub host_port: u16,
 
-    /// The port number that guest listens on.
     pub guest_port: u16,
 }
 
@@ -144,15 +132,12 @@ fn default_mac() -> String {
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct NetworkConfig {
-    /// Device type
     #[cfg_attr(feature = "serde", serde(default = "default_net_type"))]
     pub r#type: String,
 
-    /// MAC address. For convience, we first parse it as string.
     #[cfg_attr(feature = "serde", serde(default = "default_mac"))]
     pub mac: String,
 
-    /// Forward configurations.
     #[cfg_attr(feature = "serde", serde(default))]
     pub forward: Vec<ForwardConfig>,
 }

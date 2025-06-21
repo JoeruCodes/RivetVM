@@ -18,7 +18,6 @@ impl Node {
         Node { name: name.into(), properties: Vec::new(), child: Vec::new() }
     }
 
-    /// Convience method for append a property with given name and value to the current node.
     pub fn add_prop(
         &mut self,
         name: impl Into<String>,
@@ -27,7 +26,6 @@ impl Node {
         self.properties.push(Prop::new(name, value));
     }
 
-    /// Convience method for adding a child node to the current node.
     pub fn add_node(&mut self, name: impl Into<String>) -> &mut Node {
         self.child.push(Self::new(name));
         self.child.last_mut().unwrap()

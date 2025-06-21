@@ -26,7 +26,7 @@ impl ResolveConstraint for Ret {
             if let (Some(return_value), Some(dest_var)) = (self.value, frame.return_value_dest) {
                 let dest_expr =
                     AirExpression::Trace(AirTraceVariable(dest_var.0), RowOffset::Current);
-                let src_expr = lang_operand_to_air_expression(return_value);
+                let src_expr = ctx.expr_for_operand(return_value);
                 air_constraints.push(dest_expr - src_expr);
             }
             ctx.set_next_block(Some(frame.return_to_block));

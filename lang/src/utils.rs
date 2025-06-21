@@ -1109,7 +1109,7 @@ pub fn setup_sem_aux_vars(
     m_b_count: u32,
     current_air_constraints: &mut Vec<AirExpression>,
 ) -> (AirTraceVariable, AirTraceVariable, AirTraceVariable) {
-    let op_expr = lang_operand_to_air_expression(op);
+    let op_expr = ctx.expr_for_operand(op);
     println!(
         "    setup_sem_aux_vars ({}) Main Expr: {:?}",
         op_name_prefix, op_expr

@@ -15,9 +15,6 @@ const ADDR_CTRL: usize = 0x40;
 
 const CTRL_BATT_EN: u32 = 1 << 31;
 
-/// An implementation of Xilinx Zynq Ultrascale+ MPSoC RTC.
-///
-/// Currently this implementation is read only.
 pub struct ZyncMp {}
 
 impl ZyncMp {
@@ -35,7 +32,6 @@ impl ZyncMp {
 
 impl IoMemory for ZyncMp {
     fn read(&self, addr: usize, size: u32) -> u64 {
-        // This I/O memory region supports 32-bit memory access only
         if size != 4 {
             error!(target: "RTC", "illegal register read 0x{:x}", addr);
             return 0;
@@ -61,7 +57,6 @@ impl IoMemory for ZyncMp {
     }
 
     fn write(&self, addr: usize, value: u64, size: u32) {
-        // This I/O memory region supports 32-bit memory access only
         if size != 4 {
             error!(target: "RTC", "illegal register write 0x{:x} = 0x{:x}", addr, value);
             return;

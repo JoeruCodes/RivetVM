@@ -22,11 +22,15 @@ impl ResolveConstraint for Select {
         phi_condition_map: &HashMap<(String, String), ConstraintSystemVariable>,
         switch_instructions: &Vec<StructuredAirConstraint>,
     ) {
-        let cond_expr = lang_operand_to_air_expression(self.condition);
-        let true_val_expr = lang_operand_to_air_expression(self.true_value);
-        let false_val_expr = lang_operand_to_air_expression(self.false_value);
-        let res_expr =
-            AirExpression::Trace(super::AirTraceVariable(self.result.0), RowOffset::Current);
+        let reg_col_opt = ctx.col_for_ssa(self.result);
+
+        let dest_col = ctx.new_aux_variable();
+        ctx.bind_ssa_var(self.result, dest_col.0);
+
+        let cond_expr = ctx.expr_for_operand(self.condition);
+        let true_val_expr = ctx.expr_for_operand(self.true_value);
+        let false_val_expr = ctx.expr_for_operand(self.false_value);
+        let res_expr = AirExpression::Trace(dest_col, RowOffset::Current);
 
         let term1 = AirExpression::Mul(Box::new(cond_expr.clone()), Box::new(true_val_expr));
 
@@ -36,7 +40,16 @@ impl ResolveConstraint for Select {
 
         let selected_value_expr = AirExpression::Add(Box::new(term1), Box::new(term2));
 
-        let final_expr = AirExpression::Sub(Box::new(selected_value_expr), Box::new(res_expr));
+        let final_expr =
+            AirExpression::Sub(Box::new(selected_value_expr), Box::new(res_expr.clone()));
         constraints.push(final_expr);
+
+        if let Some(reg_col) = reg_col_opt {
+            use crate::constraints::{AirExpression, AirTraceVariable};
+            let selector_expr = ctx.new_row_selector();
+            let reg_expr = AirExpression::Trace(AirTraceVariable(reg_col), RowOffset::Current);
+            let eq_expr = AirExpression::Sub(Box::new(res_expr), Box::new(reg_expr));
+            ctx.add_row_gated_constraint(selector_expr, eq_expr);
+        }
     }
 }

@@ -28,9 +28,6 @@ const ADDR_QUEUE_USED_HIGH: usize = 0x0a4;
 const ADDR_CONFIG_GENERATION: usize = 0x0fc;
 const ADDR_CONFIG: usize = 0x100;
 
-/// Virtio device with MMIO transport.
-///
-/// Note: Currently drop is not properly implemented and may cause memory and resource leak.
 pub struct Mmio {
     device: Box<dyn Device>,
     queues: Vec<Arc<Mutex<super::queue::QueueInner>>>,
@@ -41,7 +38,6 @@ pub struct Mmio {
 }
 
 impl Mmio {
-    /// Create a virtio device with MMIO transport.
     pub fn new(dma_ctx: Arc<dyn DmaContext>, dev: Box<dyn Device>) -> Mmio {
         let num_queues = dev.num_queues();
         let mut queues = Vec::with_capacity(num_queues);
@@ -82,11 +78,10 @@ impl IoMemoryMut for Mmio {
             ADDR_MAGIC_VALUE => 0x74726976,
             ADDR_VERSION => 2,
             ADDR_DEVICE_ID => self.device.device_id() as u32,
-            // This field is a PCI vendor, we use 0xFFFF because it indicates invalid (N/A)
+
             ADDR_VENDOR_ID => 0xffff,
             ADDR_DEVICE_FEATURES => {
                 if self.device_features_sel {
-                    // VIRTIO_F_VERSION_1 is always set
                     1
                 } else {
                     self.device.device_feature()
@@ -117,7 +112,7 @@ impl IoMemoryMut for Mmio {
                     _ => unreachable!(),
                 }
             }
-            // As currently config space is readonly, the interrupt status must be an used buffer.
+
             ADDR_INTERRUPT_STATUS => self.device.interrupt_status(),
             ADDR_STATUS => self.device.get_status(),
             ADDR_CONFIG_GENERATION => 0,
@@ -158,7 +153,6 @@ impl IoMemoryMut for Mmio {
                         error!(target: "Mmio", "DriverFeatures do not have VIRTIO_F_VERSION_1 set")
                     }
                 } else {
-                    // Only the lowest 24-bits are for the device.
                     self.device.driver_feature(value & 0xffffff);
                     trace!(target: "Mmio", "DriverFeatures set to {:24b}", value);
                 }
@@ -230,8 +224,7 @@ impl IoMemoryMut for Mmio {
             ADDR_STATUS => {
                 if value == 0 {
                     self.device.reset();
-                    // Upon reset, reset all queues, and replace them with new queue instances.
-                    // Replacing them can hopefully allow devices to gracefully terminate tasks.
+
                     for (i, queue) in self.queues.iter_mut().enumerate() {
                         {
                             let mut lock = queue.lock();

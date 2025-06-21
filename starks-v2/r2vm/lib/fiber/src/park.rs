@@ -1,9 +1,3 @@
-//! Implementation of parking lot for fibers
-//!
-//! For detailed implementation, check out the following URLs
-//! * https://webkit.org/blog/6161/locking-in-webkit/
-//! * https://docs.rs/parking_lot
-
 use super::raw::fiber_sleep;
 use super::{FiberGroup, FiberStack, fiber_current};
 use once_cell::sync::Lazy;
@@ -35,16 +29,12 @@ pub fn park(
     validate: impl FnOnce() -> bool,
     before_sleep: impl FnOnce(),
 ) -> Option<UnparkToken> {
-    // Required before calling fiber_current.
     super::assert_in_fiber();
 
     let cur = unsafe { fiber_current() };
     let mut entry = WaitEntry { fiber: cur, token: UnparkToken(0), next: None };
 
     let valid = WAIT_LIST_MAP.with(key, |list| {
-        // Deadlock prevention: must acquire group lock after list lock.
-
-        // Give the caller a chance, under strong synchronisation guarantee, to do last check and possibly abort.
         if !validate() {
             return false;
         }

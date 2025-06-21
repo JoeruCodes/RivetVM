@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::utils::*;
 use crate::{
-    constraints::{AirExpression, ResolveConstraint, RowOffset},
+    constraints::{AirExpression, AirTraceVariable, ResolveConstraint, RowOffset},
     ConstraintSystemVariable, Operand, StructuredAirConstraint,
 };
 
@@ -23,6 +23,11 @@ impl ResolveConstraint for FpExt {
         phi_condition_map: &HashMap<(String, String), ConstraintSystemVariable>,
         switch_instructions: &Vec<StructuredAirConstraint>,
     ) {
+        let reg_col_opt = ctx.col_for_ssa(self.result);
+
+        let dest_col = ctx.new_aux_variable();
+        ctx.bind_ssa_var(self.result, dest_col.0);
+
         let (op_s_bits, op_e_bits, op_m_bits) = match self.operand_bitwidth {
             32 => (1, 8, 23),
             16 => (1, 5, 10),
@@ -217,5 +222,13 @@ impl ResolveConstraint for FpExt {
 
         constraints.push(AirExpression::Sub(Box::new(res_e_expr), Box::new(final_e)));
         constraints.push(AirExpression::Sub(Box::new(res_m_expr), Box::new(final_m)));
+
+        if let Some(reg_col) = reg_col_opt {
+            let selector_expr = ctx.new_row_selector();
+            let dest_expr = AirExpression::Trace(dest_col.clone(), RowOffset::Current);
+            let reg_expr = AirExpression::Trace(AirTraceVariable(reg_col), RowOffset::Current);
+            let diff = AirExpression::Sub(Box::new(dest_expr), Box::new(reg_expr));
+            ctx.add_row_gated_constraint(selector_expr, diff);
+        }
     }
 }

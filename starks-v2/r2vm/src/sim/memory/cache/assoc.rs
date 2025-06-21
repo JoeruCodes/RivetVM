@@ -28,7 +28,6 @@ impl Cache for SetAssocCache {
 
         fiber::sleep(self.perf.access_latency);
 
-        // Access the cache
         let mut set = self.sets[idx].lock();
         let (ptr, insert_ptr) = set.find(|entry| entry.tag == tag);
 
@@ -40,7 +39,6 @@ impl Cache for SetAssocCache {
         let evict = set.remove(insert_ptr);
         drop(set);
 
-        // Handle entry eviction
         if let Some(evict) = evict {
             self.stats.evict.fetch_add(1, Ordering::Relaxed);
             if let Some(icache) = self.icache {
@@ -58,7 +56,7 @@ impl Cache for SetAssocCache {
         self.parent.access(ctx, addr, write);
 
         let mut set = self.sets[idx].lock();
-        // TODO: Consult ReplacementPolicy as sometimes doing this would require invalidation.
+
         set.insert(insert_ptr, Entry { tag }).and_then::<(), _>(|_| unreachable!());
         drop(set);
 
@@ -78,7 +76,6 @@ impl Cache for SetAssocCache {
 }
 
 impl SetAssocCache {
-    /// Create a new set associative cache.
     pub fn new(
         parent: Arc<dyn Cache>,
         stats: Arc<Statistics>,
@@ -102,7 +99,6 @@ impl SetAssocCache {
         }
     }
 
-    /// Find out which set to use for a given address
     fn index(&self, tag: u64) -> usize {
         (tag & ((1 << self.idx_bits) - 1)) as usize
     }

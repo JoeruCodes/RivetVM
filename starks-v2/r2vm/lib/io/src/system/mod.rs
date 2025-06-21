@@ -7,27 +7,20 @@ use std::sync::Arc;
 pub mod config;
 use config::*;
 
-/// This describes all I/O aspects of the system.
 pub struct IoSystem {
-    /// Global contexts
     ctx: Arc<dyn RuntimeContext>,
     dma_ctx: Option<Arc<dyn DmaContext>>,
 
-    /// The IO memory map.
     map: BTreeMap<usize, (usize, Arc<dyn IoMemory>)>,
 
-    /// Allocated IRQs
     irq_set: BTreeSet<u32>,
 
-    /// The PLIC instance. It always exist.
     plic: Arc<Plic>,
     plic_phandle: usize,
 
-    // Types below are useful only for initialisation
     next_irq: u32,
     boundary: usize,
 
-    /// The "soc" node for
     fdt: fdt::Node,
 }
 
@@ -39,7 +32,6 @@ impl IoSystem {
         plic_base: Option<usize>,
         seip_irq: impl FnMut(usize) -> Box<dyn IrqPin>,
     ) -> IoSystem {
-        // Instantiate PLIC and corresponding device tre
         let plic = Arc::new(Plic::new((0..core_count).map(seip_irq).collect()));
 
         let mut soc = fdt::Node::new("soc");
@@ -75,14 +67,12 @@ impl IoSystem {
             fdt: soc,
         };
 
-        // 0 is not a valid IRQ
         sys.irq_set.insert(0);
 
         sys.register_mem(plic_base, 0x400000, plic);
         sys
     }
 
-    /// Allocate an unoccupied region of memory
     pub fn allocate_mem(&mut self, size: usize) -> usize {
         let base = self.boundary;
         if let Some((k, v)) = self.map.range(..(base + size)).next_back() {
@@ -93,7 +83,6 @@ impl IoSystem {
         base
     }
 
-    /// Allocate an unoccupied IRQ
     pub fn allocate_irq(&mut self) -> u32 {
         let irq = self.next_irq;
         assert!(!self.irq_set.contains(&irq), "allocated irq overlap");
@@ -154,7 +143,6 @@ impl IoMemory for IoSystem {
 }
 
 impl IoSystem {
-    /// Add a virtio device
     #[cfg(feature = "virtio")]
     pub fn add_virtio<T>(
         &mut self,

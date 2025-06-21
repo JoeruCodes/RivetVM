@@ -7,10 +7,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod assoc;
 pub use assoc::SetAssocCache;
 
-/// Basic performance statistics gathered from cache or TLB.
-///
-/// Note that total number of accesses is not included. It should rather be calculated from
-/// the previous level's miss count.
 pub struct Statistics {
     pub miss: AtomicU64,
     pub evict: AtomicU64,
@@ -29,39 +25,17 @@ impl Statistics {
     }
 }
 
-/// Basic performance model of a cache.
 pub struct PerformanceModel {
-    /// `access_latency` indicates the latency of accessing this TLB. This is the latency
-    /// between access request to the TLB and the response from the TLB. This models the
-    /// latency of SRAM access and tag check. For L1 TLB, due to the design
-    /// of R2VM in which not all memory requests reach memory model, the access latency must be zero
-    /// and modelled within the pipeline model instead.
     pub access_latency: usize,
 
-    /// `miss_penalty_before` indicates the number of penalty cyclces if the entry to looked up
-    /// does not exist in the TLB. This models the latency of preparing the bus request to
-    /// next-level TLB or the page walker.
     pub miss_penalty_before: usize,
 
-    /// `miss_penalty_after` indicates the number of penalty cycles after the response is being
-    /// received from the next-level TLB or the page walker.
     pub miss_penalty_after: usize,
 }
 
-/// Simple cache model.
-///
-/// This model could be useful if you only care about hit rate, or only need roughly
-/// accurate simulation. If you are trying to simulate a specific system, it's suggested
-/// to supplement a custom implementation of [`MemoryModel`].
-///
-/// The simple model has no cache coherency simulated.
-///
-/// [`MemoryModel`]: super::MemoryModel
 pub trait Cache: Send + Sync {
-    /// Perform a cache access at given physical address.
     fn access(&self, ctx: &mut Context, addr: u64, write: bool);
 
-    /// Flush all entries from the cache.
     fn flush_all(&self);
 }
 
@@ -70,7 +44,6 @@ pub struct MemoryControllerPerformanceModel {
     pub write_latency: usize,
 }
 
-/// Simulate a memory controller that spends a fixed number of cycles for an memory access.
 pub struct MemoryController {
     perf: MemoryControllerPerformanceModel,
 }
@@ -217,7 +190,6 @@ impl super::MemoryModel for SimpleCacheModel {
         let out = self.i_tlbs[ctx.hartid as usize].translate(ctx, addr, AccessType::Execute)?.0;
         self.i_caches[ctx.hartid as usize].access(ctx, out, false);
 
-        // TODO: ReplacementPolicy probably should be consulted first.
         ctx.insert_instruction_cache_line(addr, out);
         Ok(out)
     }
@@ -228,7 +200,6 @@ impl super::MemoryModel for SimpleCacheModel {
             .0;
         self.d_caches[ctx.hartid as usize].access(ctx, out, write);
 
-        // TODO: ReplacementPolicy probably should be consulted first.
         ctx.insert_data_cache_line(addr, out, write);
         Ok(out)
     }

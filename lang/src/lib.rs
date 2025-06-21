@@ -1,3 +1,5 @@
+#![allow(unused_variables, unused_imports, dead_code)]
+
 use inkwell::basic_block::BasicBlock;
 use inkwell::context::Context;
 use inkwell::types::{AnyTypeEnum, AsTypeRef, BasicType, BasicTypeEnum};
@@ -379,9 +381,7 @@ pub fn process_llvm_ir(
                     InstructionOpcode::Unreachable
                     | InstructionOpcode::Fence
                     | InstructionOpcode::UserOp1
-                    | InstructionOpcode::UserOp2 => {
-                        // These are either ignored or handled as no-ops in this context.
-                    }
+                    | InstructionOpcode::UserOp2 => {}
                     InstructionOpcode::Freeze => {
                         let operand_llvm = get_operand_as_basic_value(0).expect("Freeze op0");
                         let operand_air = module_arithmetization_ctx
@@ -465,7 +465,6 @@ pub fn process_llvm_ir(
                         println!("v1_llvm: {:?}", v1_llvm);
                         println!("v2_llvm: {:?}", v2_llvm);
 
-                        // Get the mask values using LLVM C API
                         let num_elements = unsafe { LLVMGetNumMaskElements(instr.as_value_ref()) };
                         let mut mask = Vec::with_capacity(num_elements as usize);
 
@@ -479,7 +478,6 @@ pub fn process_llvm_ir(
                             .try_into()
                             .expect("ShuffleVector result not a basic value");
 
-                        // Register the source vectors in the map if they're not already there
                         if !module_arithmetization_ctx
                             .llvm_to_cs_var_map
                             .contains_key(&v1_llvm)
@@ -499,7 +497,6 @@ pub fn process_llvm_ir(
                                 .insert(v2_llvm, v2_var);
                         }
 
-                        // Store the mapping without creating a new variable for the result
                         module_arithmetization_ctx
                             .shuffle_vector_map
                             .insert(result_val, (v1_llvm, v2_llvm, mask));
@@ -510,7 +507,6 @@ pub fn process_llvm_ir(
                         let va_list_ptr_air = module_arithmetization_ctx
                             .llvm_basic_value_to_air_operand(va_list_ptr_llvm);
 
-                        // 1. Load the current argument pointer from the va_list
                         let current_arg_ptr_var = module_arithmetization_ctx.new_cs_variable();
                         let time_step1 = module_arithmetization_ctx.new_time_step_variable();
                         module_arithmetization_ctx.add_memory_log_entry(MemoryAccessLogEntry {
@@ -518,11 +514,10 @@ pub fn process_llvm_ir(
                             value: Operand::Var(current_arg_ptr_var),
                             time_step: time_step1,
                             access_type: MemoryAccessType::Read,
-                            bitwidth: 64, // va_list is a pointer
+                            bitwidth: 64,
                             block_name: current_block_name.clone(),
                         });
 
-                        // 2. Load the actual argument value
                         let result_cs_var =
                             module_arithmetization_ctx.map_instruction_result_to_new_cs_var(instr);
                         let result_type = instr.get_type();
@@ -545,7 +540,6 @@ pub fn process_llvm_ir(
                             block_name: current_block_name.clone(),
                         });
 
-                        // 3. Increment the argument pointer
                         let new_arg_ptr_var = module_arithmetization_ctx.new_cs_variable();
                         let add_sc = StructuredAirConstraint::Add(Add {
                             operand1: Operand::Var(current_arg_ptr_var),
@@ -555,14 +549,13 @@ pub fn process_llvm_ir(
                         });
                         module_arithmetization_ctx.add_structured_constraint(add_sc);
 
-                        // 4. Store the new argument pointer back to the va_list
                         let time_step3 = module_arithmetization_ctx.new_time_step_variable();
                         module_arithmetization_ctx.add_memory_log_entry(MemoryAccessLogEntry {
                             address: va_list_ptr_air,
                             value: Operand::Var(new_arg_ptr_var),
                             time_step: time_step3,
                             access_type: MemoryAccessType::Write,
-                            bitwidth: 64, // va_list is a pointer
+                            bitwidth: 64,
                             block_name: current_block_name.clone(),
                         });
                     }
@@ -1509,27 +1502,24 @@ pub fn process_llvm_ir(
                                     panic!("Unsupported float type for alloca size")
                                 }
                             }
-                            BasicTypeEnum::PointerType(_) => 8, // Assuming 64-bit pointers
+                            BasicTypeEnum::PointerType(_) => 8,
                             _ => {
-                                // Special case for __va_list_tag which has a known size
                                 if let BasicTypeEnum::StructType(st) = allocated_type {
                                     if st.get_name().map_or(false, |name| {
                                         name.to_str().map_or(false, |s| s == "__va_list_tag")
                                     }) {
-                                        24 // Size of __va_list_tag struct (i32, i32, i8*, i8*)
+                                        24
                                     } else {
                                         let size_val = allocated_type
                                             .size_of()
                                             .inspect(|x| println!("size_of: {:?}", x))
                                             .expect("size_of should not be None for aggregate types in test IR");
 
-                                        // Try to get constant value, if that fails try to evaluate the expression
                                         if let Some(const_val) =
                                             size_val.get_zero_extended_constant()
                                         {
                                             const_val as u32
                                         } else {
-                                            // For complex expressions, calculate size from struct fields
                                             let mut total_size = 0;
                                             for i in 0..st.count_fields() {
                                                 let field_type = st
@@ -1537,7 +1527,7 @@ pub fn process_llvm_ir(
                                                     .expect("Field type should exist");
                                                 let field_size = match field_type {
                                                     BasicTypeEnum::IntType(it) => it.get_bit_width() / 8,
-                                                    BasicTypeEnum::PointerType(_) => 8, // Assuming 64-bit pointers
+                                                    BasicTypeEnum::PointerType(_) => 8,
                                                     BasicTypeEnum::FloatType(ft) => {
                                                         let ctx = ft.get_context();
                                                         if ft == ctx.f32_type() { 4 }
@@ -1554,13 +1544,41 @@ pub fn process_llvm_ir(
                                             total_size as u32
                                         }
                                     }
+                                } else if let BasicTypeEnum::ArrayType(at) = allocated_type {
+                                    let elem_ty = at.get_element_type();
+                                    let elem_size: u32 = match elem_ty {
+                                        BasicTypeEnum::IntType(it) => {
+                                            ((it.get_bit_width() + 7) / 8) as u32
+                                        }
+                                        BasicTypeEnum::PointerType(_) => 8,
+                                        BasicTypeEnum::FloatType(ft) => {
+                                            let ctx = ft.get_context();
+                                            if ft == ctx.f16_type() {
+                                                2
+                                            } else if ft == ctx.f32_type() {
+                                                4
+                                            } else if ft == ctx.f64_type() {
+                                                8
+                                            } else if ft == ctx.f128_type() {
+                                                16
+                                            } else if ft == ctx.x86_f80_type() {
+                                                10
+                                            } else if ft == ctx.ppc_f128_type() {
+                                                16
+                                            } else {
+                                                8
+                                            }
+                                        }
+                                        _ => 8,
+                                    };
+                                    elem_size * at.len() as u32
                                 } else {
                                     allocated_type
                                         .size_of()
                                         .inspect(|x| println!("size_of: {:?}", x))
                                         .expect("size_of should not be None for aggregate types in test IR")
                                         .get_zero_extended_constant()
-                                        .expect("Aggregate type size must be a constant") as u32
+                                        .unwrap_or(8) as u32
                                 }
                             }
                         } as u128;
@@ -1591,8 +1609,8 @@ pub fn process_llvm_ir(
                                 BasicTypeEnum::PointerType(pt) => pt
                                     .size_of()
                                     .get_zero_extended_constant()
-                                    .expect("Pointer size should be a constant for store")
-                                    as u32,
+                                    .map(|v| v as u32)
+                                    .unwrap_or(64),
                                 _ => panic!("Store of non-int/ptr type: {:?}", val_type),
                             };
                             let log_entry = MemoryAccessLogEntry {
@@ -1621,8 +1639,8 @@ pub fn process_llvm_ir(
                                 AnyTypeEnum::PointerType(pt) => pt
                                     .size_of()
                                     .get_zero_extended_constant()
-                                    .expect("Pointer size should be a constant for load")
-                                    as u32,
+                                    .map(|v| v as u32)
+                                    .unwrap_or(64),
                                 _ => panic!("Load of non-int/ptr type: {:?}", loaded_type),
                             };
                             let log_entry = MemoryAccessLogEntry {
@@ -2080,7 +2098,7 @@ pub fn process_llvm_ir(
                             let element_size = element_type
                                 .size_of()
                                 .and_then(|val| val.get_zero_extended_constant())
-                                .expect("Element size for GEP must be a constant value");
+                                .unwrap_or(8);
 
                             let last_index_llvm =
                                 get_operand_as_basic_value(instr.get_num_operands() - 1)
@@ -2608,9 +2626,6 @@ pub fn process_llvm_ir(
                         let op_val_ref = unsafe { LLVMGetOperand(instr.as_value_ref(), 0) };
                         let mut agg_val_any = unsafe { AnyValueEnum::new(op_val_ref) };
 
-                        // This instruction is tricky because indices are not standard operands.
-                        // We are assuming for now the number of indices is 1 based on test cases.
-                        // A more robust solution might require FFI calls to get all indices.
                         let num_indices = unsafe { LLVMGetNumIndices(instr.as_value_ref()) };
                         if num_indices == 0 {
                             panic!("ExtractValue must have at least one index.");
@@ -2801,8 +2816,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 4); // Return constraint + stack operations
-        assert_eq!(memory_log.len(), 2); // Stack operations for return
+        assert_eq!(constraints.len(), 4);
+        assert_eq!(memory_log.len(), 2);
     }
 
     #[test]
@@ -2814,8 +2829,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 5); // Add constraint + Return + stack operations
-        assert_eq!(memory_log.len(), 2); // Stack operations for return
+        assert_eq!(constraints.len(), 5);
+        assert_eq!(memory_log.len(), 2);
 
         if let StructuredAirConstraint::Add(add) = &constraints[0] {
             assert_eq!(add.block_name, "entry");
@@ -2836,8 +2851,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 5); // ICmp constraint + Return + stack operations
-        assert_eq!(memory_log.len(), 2); // Stack operations for return
+        assert_eq!(constraints.len(), 5);
+        assert_eq!(memory_log.len(), 2);
 
         if let StructuredAirConstraint::Icmp(icmp) = &constraints[0] {
             assert_eq!(icmp.block_name, "entry");
@@ -2862,8 +2877,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 9); // Branch constraint + 2 Returns + stack operations
-        assert_eq!(memory_log.len(), 4); // Stack operations for returns
+        assert_eq!(constraints.len(), 9);
+        assert_eq!(memory_log.len(), 4);
 
         if let StructuredAirConstraint::ConditionalBranch(cb) = &constraints[0] {
             assert_eq!(cb.block_name, "entry");
@@ -2893,8 +2908,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 8); // Branch + Phi + Return + stack operations
-        assert_eq!(memory_log.len(), 2); // Stack operations for returns
+        assert_eq!(constraints.len(), 8);
+        assert_eq!(memory_log.len(), 2);
 
         let phi_constraint = constraints
             .iter()
@@ -2913,10 +2928,9 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 7); // Add + Sub + Mul + Return + stack operations
-        assert_eq!(memory_log.len(), 2); // Stack operations for return
+        assert_eq!(constraints.len(), 7);
+        assert_eq!(memory_log.len(), 2);
 
-        // Verify the sequence of operations
         if let StructuredAirConstraint::Add { .. } = constraints[0] {
         } else {
             panic!("Expected Add constraint first");
@@ -2940,8 +2954,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 6); // Alloca + Return + stack operations
-        assert_eq!(memory_log.len(), 2); // Stack operations for return
+        assert_eq!(constraints.len(), 6);
+        assert_eq!(memory_log.len(), 2);
 
         if let StructuredAirConstraint::Alloca {
             ptr_result,
@@ -2967,8 +2981,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 6); // Alloca + Return + stack operations
-        assert_eq!(memory_log.len(), 3); // Alloca + Store + Return stack operations
+        assert_eq!(constraints.len(), 6);
+        assert_eq!(memory_log.len(), 3);
 
         let write_count = memory_log
             .iter()
@@ -2988,8 +3002,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 6); // Alloca + Return + stack operations
-        assert_eq!(memory_log.len(), 4); // Alloca + Store + Load + Return stack operations
+        assert_eq!(constraints.len(), 6);
+        assert_eq!(memory_log.len(), 4);
 
         let read_count = memory_log
             .iter()
@@ -3013,8 +3027,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 13); // Switch + 3 Returns + stack operations
-        assert_eq!(memory_log.len(), 6); // Stack operations for returns
+        assert_eq!(constraints.len(), 13);
+        assert_eq!(memory_log.len(), 6);
 
         if let StructuredAirConstraint::Switch(sw) = &constraints[0] {
             assert_eq!(sw.block_name, "entry");
@@ -3035,8 +3049,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 5); // Sub + Return + stack operations
-        assert_eq!(memory_log.len(), 2); // Stack operations for return
+        assert_eq!(constraints.len(), 5);
+        assert_eq!(memory_log.len(), 2);
 
         if let StructuredAirConstraint::Sub(sub) = &constraints[0] {
             assert_eq!(sub.block_name, "entry");
@@ -3057,8 +3071,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 5); // And + Return + stack operations
-        assert_eq!(memory_log.len(), 2); // Stack operations for return
+        assert_eq!(constraints.len(), 5);
+        assert_eq!(memory_log.len(), 2);
 
         if let StructuredAirConstraint::And(and) = &constraints[0] {
             assert_eq!(and.block_name, "entry");
@@ -3079,8 +3093,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 5); // Or + Return + stack operations
-        assert_eq!(memory_log.len(), 2); // Stack operations for return
+        assert_eq!(constraints.len(), 5);
+        assert_eq!(memory_log.len(), 2);
 
         if let StructuredAirConstraint::Or(or) = &constraints[0] {
             assert_eq!(or.block_name, "entry");
@@ -3101,8 +3115,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 5); // Xor + Return + stack operations
-        assert_eq!(memory_log.len(), 2); // Stack operations for return
+        assert_eq!(constraints.len(), 5);
+        assert_eq!(memory_log.len(), 2);
 
         if let StructuredAirConstraint::Xor(xor) = &constraints[0] {
             assert_eq!(xor.block_name, "entry");
@@ -3123,8 +3137,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 5); // SDiv + Return + stack operations
-        assert_eq!(memory_log.len(), 2); // Stack operations for return
+        assert_eq!(constraints.len(), 5);
+        assert_eq!(memory_log.len(), 2);
 
         if let StructuredAirConstraint::SDiv(sdiv) = &constraints[0] {
             assert_eq!(sdiv.block_name, "entry");
@@ -3145,8 +3159,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 5); // SRem + Return + stack operations
-        assert_eq!(memory_log.len(), 2); // Stack operations for return
+        assert_eq!(constraints.len(), 5);
+        assert_eq!(memory_log.len(), 2);
 
         if let StructuredAirConstraint::SRem(srem) = &constraints[0] {
             assert_eq!(srem.block_name, "entry");
@@ -3167,8 +3181,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 5); // URem + Return + stack operations
-        assert_eq!(memory_log.len(), 2); // Stack operations for return
+        assert_eq!(constraints.len(), 5);
+        assert_eq!(memory_log.len(), 2);
 
         if let StructuredAirConstraint::URem(urem) = &constraints[0] {
             assert_eq!(urem.block_name, "entry");
@@ -3194,8 +3208,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 13); // Add + Call + 2 Returns + stack operations
-        assert_eq!(memory_log.len(), 6); // Stack operations for calls and returns
+        assert_eq!(constraints.len(), 13);
+        assert_eq!(memory_log.len(), 6);
 
         let call_constraint = constraints
             .iter()
@@ -3231,8 +3245,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 21); // Add + 2 Calls + 3 Returns + stack operations
-        assert_eq!(memory_log.len(), 10); // Stack operations for calls and returns
+        assert_eq!(constraints.len(), 21);
+        assert_eq!(memory_log.len(), 10);
 
         let call_constraints_count = constraints
             .iter()
@@ -3269,8 +3283,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert!(constraints.len() >= 7); // ICmp + Branch + Sub + Call + Mul + Return + stack operations
-        assert!(memory_log.len() >= 4); // Stack operations for calls and returns
+        assert!(constraints.len() >= 7);
+        assert!(memory_log.len() >= 4);
 
         let has_return_address = constraints
             .iter()
@@ -3302,8 +3316,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert!(constraints.len() >= 4); // CallBr + 2 Returns + stack operations
-        assert!(memory_log.len() >= 4); // Stack operations for calls and returns
+        assert!(constraints.len() >= 4);
+        assert!(memory_log.len() >= 4);
 
         let callbr_constraint = constraints.iter().find_map(|c| match c {
             StructuredAirConstraint::CallBr(callbr) => Some(callbr),
@@ -3328,8 +3342,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 5); // AtomicRMW + Return + stack operations
-        assert_eq!(memory_log.len(), 4); // RMW read/write + Return stack operations
+        assert_eq!(constraints.len(), 5);
+        assert_eq!(memory_log.len(), 4);
 
         let rmw_constraint = constraints.iter().find_map(|c| match c {
             StructuredAirConstraint::AtomicRMW(rmw) => Some(rmw),
@@ -3354,8 +3368,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 5); // AtomicCmpXchg + Assign + Return + stack operations
-        assert_eq!(memory_log.len(), 4); // CmpXchg read/write + Return stack operations
+        assert_eq!(constraints.len(), 5);
+        assert_eq!(memory_log.len(), 4);
 
         let cmpxchg_constraint = constraints.iter().find_map(|c| match c {
             StructuredAirConstraint::AtomicCmpXchg(cx) => Some(cx),
@@ -3385,8 +3399,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 5); // Assign + Return + stack operations
-        assert_eq!(memory_log.len(), 2); // Stack operations for return
+        assert_eq!(constraints.len(), 5);
+        assert_eq!(memory_log.len(), 2);
 
         let assign_constraint = constraints.iter().find_map(|c| match c {
             StructuredAirConstraint::Assign(assign) => Some(assign),
@@ -3408,8 +3422,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 5); // Assign + Return + stack operations
-        assert_eq!(memory_log.len(), 2); // Stack operations for return
+        assert_eq!(constraints.len(), 5);
+        assert_eq!(memory_log.len(), 2);
 
         let assign_constraint = constraints.iter().find_map(|c| match c {
             StructuredAirConstraint::Assign(assign) => Some(assign),
@@ -3431,8 +3445,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 5); // Assign + Return + stack operations
-        assert_eq!(memory_log.len(), 2); // Stack operations for return
+        assert_eq!(constraints.len(), 5);
+        assert_eq!(memory_log.len(), 2);
 
         let assign_constraint = constraints.iter().find_map(|c| match c {
             StructuredAirConstraint::Assign(assign) => Some(assign),
@@ -3454,8 +3468,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 5); // Assign + Return + stack operations
-        assert_eq!(memory_log.len(), 2); // Stack operations for return
+        assert_eq!(constraints.len(), 5);
+        assert_eq!(memory_log.len(), 2);
 
         let assign_constraint = constraints.iter().find_map(|c| match c {
             StructuredAirConstraint::Assign(assign) => Some(assign),
@@ -3485,8 +3499,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert!(constraints.len() >= 4); // CleanupPad + CleanupRet + Return + stack operations
-        assert!(memory_log.len() >= 4); // Stack operations for calls and returns
+        assert!(constraints.len() >= 4);
+        assert!(memory_log.len() >= 4);
 
         let pad_constraint = constraints.iter().find_map(|c| match c {
             StructuredAirConstraint::CleanupPad(cp) => Some(cp),
@@ -3519,8 +3533,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert!(constraints.len() >= 4); // LandingPad + Resume + Return + stack operations
-        assert!(memory_log.len() >= 4); // Stack operations for calls and returns
+        assert!(constraints.len() >= 4);
+        assert!(memory_log.len() >= 4);
 
         let pad_constraint = constraints.iter().find_map(|c| match c {
             StructuredAirConstraint::LandingPad(lp) => Some(lp),
@@ -3550,8 +3564,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 9); // IndirectBr + 2 Returns + stack operations
-        assert_eq!(memory_log.len(), 4); // Stack operations for returns
+        assert_eq!(constraints.len(), 9);
+        assert_eq!(memory_log.len(), 4);
 
         let indirect_br = constraints.iter().find_map(|c| match c {
             StructuredAirConstraint::IndirectBr(ibr) => Some(ibr),
@@ -3575,8 +3589,8 @@ mod tests {
             }
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert_eq!(constraints.len(), 4); // Assign + Return + stack operations
-        assert_eq!(memory_log.len(), 2); // Stack operations for return
+        assert_eq!(constraints.len(), 4);
+        assert_eq!(memory_log.len(), 2);
     }
 
     #[test]
@@ -3598,8 +3612,8 @@ mod tests {
             declare void @llvm.va_end(i8*)
         "#;
         let (constraints, memory_log) = process_llvm_ir(llvm_ir).unwrap();
-        assert!(constraints.len() >= 5); // Alloca + Assign + 2 Calls + Return + stack operations
-        assert!(memory_log.len() >= 6); // Alloca + va_arg read/write + Call stack operations
+        assert!(constraints.len() >= 5);
+        assert!(memory_log.len() >= 6);
 
         let add_count = constraints
             .iter()

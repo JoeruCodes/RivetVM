@@ -7,10 +7,8 @@ use p9::serialize::{Fcall, Serializable};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-/// Feature bit indicating presence of mount tag
 const VIRTIO_9P_MOUNT_TAG: u32 = 1;
 
-/// A virtio P9 file share device.
 pub struct P9<FS: FileSystem> {
     status: u32,
     config: Box<[u8]>,
@@ -28,14 +26,12 @@ where
     FS: FileSystem + Send + 'static,
     <FS as FileSystem>::File: Send,
 {
-    /// Create a new virtio P9 file share device with given mount tag and file system.
     pub fn new(
         ctx: Arc<dyn RuntimeContext>,
         irq: Box<dyn IrqPin>,
         mount_tag: &str,
         fs: FS,
     ) -> Self {
-        // Config space is composed of u16 length followed by the tag bytes
         let config = {
             let tag_len = mount_tag.len();
             assert!(tag_len <= u16::max_value() as usize);

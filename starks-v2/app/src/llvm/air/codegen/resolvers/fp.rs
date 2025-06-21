@@ -1,8 +1,6 @@
 use lang::constraints::{AirExpression, AirTraceVariable, RowOffset};
 use lang::ctx::AirGenContext;
 
-use lang::constraints::lang_operand_to_air_expression;
-
 fn new_boolean_aux(
     ctx: &mut AirGenContext,
     constraints: &mut Vec<AirExpression>,
@@ -1108,7 +1106,7 @@ pub fn setup_sem_aux_vars(
     m_b_count: u32,
     current_air_constraints: &mut Vec<AirExpression>,
 ) -> (AirTraceVariable, AirTraceVariable, AirTraceVariable) {
-    let op_expr = lang_operand_to_air_expression(op);
+    let op_expr = ctx.expr_for_operand(op);
     println!(
         "    setup_sem_aux_vars ({}) Main Expr: {:?}",
         op_name_prefix, op_expr

@@ -1,7 +1,6 @@
 use std::convert::{TryFrom, TryInto};
 use std::error::Error;
 
-/// Error indicating failure to convert property to the desired type.
 #[derive(Debug)]
 pub struct PropConversionError;
 
@@ -11,12 +10,9 @@ impl<T: Error> From<T> for PropConversionError {
     }
 }
 
-/// A wrapper around underlying bytes of a device tree property.
-/// Use provided `{TryFrom}` trait implementations to convert types from and to this type.
 #[derive(Clone)]
 pub struct PropValue(pub Box<[u8]>);
 
-// Empty
 impl TryFrom<()> for PropValue {
     type Error = PropConversionError;
     fn try_from(_: ()) -> Result<Self, Self::Error> {
@@ -34,7 +30,6 @@ impl TryFrom<&PropValue> for () {
     }
 }
 
-// String
 impl TryFrom<&str> for PropValue {
     type Error = PropConversionError;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
@@ -63,7 +58,6 @@ impl TryFrom<&[&str]> for PropValue {
     }
 }
 
-// Cell
 impl TryFrom<u32> for PropValue {
     type Error = PropConversionError;
     fn try_from(value: u32) -> Result<Self, Self::Error> {
@@ -98,7 +92,6 @@ impl TryFrom<&PropValue> for u64 {
     }
 }
 
-// Cells
 impl TryFrom<&[u32]> for PropValue {
     type Error = PropConversionError;
     fn try_from(value: &[u32]) -> Result<Self, Self::Error> {
@@ -151,7 +144,6 @@ impl TryFrom<&PropValue> for Box<[u64]> {
     }
 }
 
-// Raw bytes
 impl TryFrom<&[u8]> for PropValue {
     type Error = PropConversionError;
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {

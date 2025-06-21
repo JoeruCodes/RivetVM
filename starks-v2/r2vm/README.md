@@ -6,7 +6,7 @@ R2VM is a full-system, multi-core, cycle-level simulator, with binary translatio
 
 ## Citation
 
-Some approaches of this simulator are described in [our paper](https://carrv.github.io/2020/papers/CARRV2020_paper_6_Guo.pdf).
+Some approaches of this simulator are described in [our paper](https:
 
 If you would like to cite this work, you may cite as
 > Xuan Guo and Robert Mullins. 2020. Accelerate Cycle-Level Full-System Simulation of Multi-Core RISC-V Systems with Binary Translation. In *Fourth Workshop on Computer Architecture Research with RISC-V*
@@ -23,17 +23,17 @@ Or use the following bibtex snippet:
 
 ## Installation
 
-R2VM is written in Rust. To compile it, you will need to [install Rust](https://rustup.rs/) first, then:
+R2VM is written in Rust. To compile it, you will need to [install Rust](https:
 
 ```bash
-git clone https://github.com/nbdd0121/r2vm.git
+git clone https:
 cd rv2m
 cargo build --release
 ```
 
 You can run R2VM with `cargo run --release` or locate the compiled binary at `target/release/r2vm`.
 
-If you don't want to modify code, you can also use `cargo install --git https://github.com/nbdd0121/r2vm.git` to install it directly.
+If you don't want to modify code, you can also use `cargo install --git https:
 
 ## Configuration
 

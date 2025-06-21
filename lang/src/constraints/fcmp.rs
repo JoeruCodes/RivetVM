@@ -1,6 +1,6 @@
 use inkwell::FloatPredicate;
 
-use crate::constraints::{AirExpression, RowOffset};
+use crate::constraints::{AirExpression, AirTraceVariable, RowOffset};
 use crate::utils::*;
 use crate::{constraints::ResolveConstraint, ConstraintSystemVariable, Operand};
 
@@ -22,6 +22,12 @@ impl ResolveConstraint for FCmp {
         phi_condition_map: &std::collections::HashMap<(String, String), ConstraintSystemVariable>,
         switch_instructions: &Vec<crate::StructuredAirConstraint>,
     ) {
+        let reg_col_opt = ctx.col_for_ssa(self.result);
+
+        let dest_col = ctx.new_aux_variable();
+        ctx.bind_ssa_var(self.result, dest_col.0);
+        let res_expr_full = AirExpression::Trace(dest_col, RowOffset::Current);
+
         let (s_bit_count, exp_bit_count, mant_bit_count) = match self.operand_bitwidth {
             16 => (1, 5, 10),
             32 => (1, 8, 23),
@@ -59,7 +65,7 @@ impl ResolveConstraint for FCmp {
         let op2_e_expr = AirExpression::Trace(op2_e_var, RowOffset::Current);
         let op2_m_expr = AirExpression::Trace(op2_m_var, RowOffset::Current);
 
-        let res_air_var = super::AirTraceVariable(self.result.0);
+        let res_air_var = super::AirTraceVariable(dest_col.0);
         let res_expr = AirExpression::Trace(res_air_var, RowOffset::Current);
 
         constraints.push(AirExpression::Mul(
@@ -422,5 +428,12 @@ impl ResolveConstraint for FCmp {
         };
 
         constraints.push(AirExpression::Sub(Box::new(res_expr), Box::new(final_res)));
+
+        if let Some(reg_col) = reg_col_opt {
+            let selector_expr = ctx.new_row_selector();
+            let reg_expr = AirExpression::Trace(AirTraceVariable(reg_col), RowOffset::Current);
+            let diff_expr = AirExpression::Sub(Box::new(res_expr_full.clone()), Box::new(reg_expr));
+            ctx.add_row_gated_constraint(selector_expr, diff_expr);
+        }
     }
 }

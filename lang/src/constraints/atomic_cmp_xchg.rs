@@ -30,12 +30,12 @@ impl ResolveConstraint for AtomicCmpXchg {
     ) {
         let loaded_val_expr =
             AirExpression::Trace(AirTraceVariable(self.result_val.0), RowOffset::Current);
-        let cmp_expr = lang_operand_to_air_expression(self.cmp);
+        let cmp_expr = ctx.expr_for_operand(self.cmp);
         let success_expr =
             AirExpression::Trace(AirTraceVariable(self.result_success.0), RowOffset::Current);
         constraints.push((loaded_val_expr.clone() - cmp_expr.clone()) * success_expr.clone());
 
-        let new_val_expr = lang_operand_to_air_expression(self.new);
+        let new_val_expr = ctx.expr_for_operand(self.new);
         let value_to_write_expr = (success_expr.clone() * new_val_expr)
             + ((AirExpression::Constant(1) - success_expr) * loaded_val_expr);
 

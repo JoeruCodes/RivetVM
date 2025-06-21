@@ -6,49 +6,41 @@ extern crate memoffset;
 pub mod config;
 pub mod emu;
 pub mod sim;
+pub mod ssa_hook;
 pub mod trace;
 pub mod util;
 
 use clap::{CommandFactory, FromArgMatches, Parser};
 use ro_cell::RoCell;
+#[cfg(feature = "trace")]
+use serde_json;
 use std::cell::UnsafeCell;
+use std::collections::HashMap;
 use std::ffi::{CString, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 
 pub struct Flags {
-    // A flag to determine whether to print instruction out when it is decoded.
     disassemble: bool,
 
-    // The highest privilege mode emulated
     prv: u8,
 
-    /// If perf map should be generated
     perf: bool,
 
-    // Whether threaded mode should be used
     thread: bool,
 
-    // Whether blocking IO should be offloaded to a separate thread or block on the event loop.
     blocking_io: bool,
 
-    /// The active model ID used
     model_id: usize,
 
-    /// Whether WFI should be treated as NOP in lock-step mode
     wfi_nop: bool,
 
-    /// Dump FDT option
     dump_fdt: Option<OsString>,
 
-    /// A flag to determine whether to trace all system calls. If true then all guest system calls will be logged.
     strace: bool,
 
-    /// The actual path of the executable. Needed by src/emu/syscall.rs to redirect /proc/self/*
     exec_path: CString,
 
-    /// Path of sysroot. When the guest application tries to open a file, and the corresponding file exists in sysroot,
-    /// it will be redirected.
     sysroot: PathBuf,
 
     #[cfg(feature = "trace")]
@@ -57,37 +49,34 @@ pub struct Flags {
 
 #[derive(Parser)]
 pub struct Args {
-    /// Log system calls.
     #[arg(long)]
     strace: bool,
-    /// Log decoded instructions.
+
     #[arg(long)]
     disassemble: bool,
-    /// Generate /tmp/perf-<PID>.map for perf tool.
+
     #[arg(long)]
     perf: bool,
-    /// Use lockstep non-threaded mode for execution.
+
     #[arg(long)]
     lockstep: bool,
-    /// Turn WFI instructions to NOPs instead of sleeping.
+
     #[arg(long)]
     wfi_nop: bool,
-    /// Change the sysroot to a non-default value.
+
     #[arg(long)]
     sysroot: Option<OsString>,
-    /// Save FDT to the specified path.
+
     #[arg(long)]
     dump_fdt: Option<OsString>,
     #[arg(value_name = "PROGRAM")]
     exec_path: OsString,
     arguments: Vec<OsString>,
 
-    /// Enable execution tracing.
     #[cfg(feature = "trace")]
     #[arg(long)]
     trace: bool,
 
-    /// Output file for execution trace.
     #[cfg(feature = "trace")]
     #[arg(long, default_value = "trace.json")]
     trace_file: PathBuf,
@@ -125,7 +114,6 @@ pub fn threaded() -> bool {
 static EXIT_REASON: parking_lot::Mutex<Option<ExitReason>> =
     parking_lot::Mutex::const_new(<parking_lot::RawMutex as lock_api::RawMutex>::INIT, None);
 
-/// Reason for exiting executors
 enum ExitReason {
     SwitchModel(usize),
     Exit(i32),
@@ -134,15 +122,15 @@ enum ExitReason {
 }
 
 fn shutdown(reason: ExitReason) {
-    // Shutdown event loop as soon as possible
     event_loop().shutdown();
 
     *EXIT_REASON.lock() = Some(reason);
 
-    // Shutdown all execution threads
     for i in 0..core_count() {
         shared_context(i).shutdown();
     }
+
+    emu::signal::install_final_exit_handler();
 }
 
 static CONFIG: RoCell<config::Config> = unsafe { RoCell::new_uninit() };
@@ -152,10 +140,8 @@ extern "C" {
 }
 
 pub fn main() {
-    // Allow any one to ptrace us, mainly for debugging purpose
     unsafe { libc::prctl(libc::PR_SET_PTRACER, (-1) as libc::c_long) };
 
-    // Top priority: set up page fault handlers so safe_memory features will work.
     emu::signal::init();
     pretty_env_logger::init();
 
@@ -192,17 +178,12 @@ pub fn main() {
             .exit();
     });
 
-    // We accept two types of input. The file can either be a user-space ELF file,
-    // or it can be a config file.
     if loader.is_elf() {
         if let Err(msg) = loader.validate_elf() {
             command.error(clap::error::ErrorKind::ValueValidation, msg).exit();
         }
         unsafe { RoCell::as_mut(&FLAGS).prv = 0 }
     } else {
-        // Full-system emulation is needed. Originally we uses kernel path as "program name"
-        // directly, but as full-system emulation requires many peripheral devices as well,
-        // we decided to only accept config files.
         let Ok(toml_str) = std::str::from_utf8(loader.as_slice()) else {
             command
                 .error(clap::error::ErrorKind::InvalidUtf8, "invalid config file: not utf8")
@@ -218,7 +199,6 @@ pub fn main() {
         });
         unsafe { RoCell::init(&CONFIG, config) };
 
-        // Currently due to our icache implementation, we cannot efficiently support >32 cores
         if CONFIG.firmware.is_some() {
             unsafe { RoCell::as_mut(&FLAGS).prv = 3 }
         }
@@ -233,14 +213,12 @@ pub fn main() {
         });
     }
 
-    // Create fibers for all threads
     let mut fibers = Vec::new();
     let mut contexts = Vec::new();
     let mut shared_contexts = Vec::new();
 
     let num_cores = if get_flags().prv == 0 { 1 } else { CONFIG.core };
 
-    // Create a fiber for event-driven simulation, e.g. timer, I/O
     let event_fiber = fiber::FiberContext::new(emu::EventLoop::new());
     unsafe { RoCell::init(&EVENT_LOOP, std::mem::transmute(event_fiber.data::<emu::EventLoop>())) }
     fibers.push(event_fiber);
@@ -256,7 +234,7 @@ pub fn main() {
             lr_value: 0,
             cause: 0,
             tval: 0,
-            // FPU turned on by default
+
             mstatus: 0x6000,
             scause: 0,
             sepc: 0,
@@ -274,16 +252,29 @@ pub fn main() {
             mscratch: 0,
             mtvec: 0,
             mcounteren: 0,
-            // These are set by setup_mem, so we don't really care now.
+
             pc: 0,
             prv: 0,
             hartid: i as u64,
             minstret: 0,
             cycle_offset: 0,
             #[cfg(feature = "trace")]
-            tracer: if get_flags().trace { Some(crate::trace::Tracer::new()) } else { None },
+            tracer: {
+                if get_flags().trace {
+                    let num_extra_cols = {
+                        let map: std::collections::HashMap<String, usize> =
+                            serde_json::from_slice(include_bytes!("../../app/src/vm/ssa_map.json"))
+                                .unwrap_or_default();
+                        let max_col = map.values().copied().max().unwrap_or(31);
+                        max_col.saturating_sub(31)
+                    };
+                    Some(crate::trace::Tracer::new_with_cols(num_extra_cols))
+                } else {
+                    None
+                }
+            },
         };
-        // x0 must always be 0
+
         newctx.registers[0] = 0;
 
         if CONFIG.firmware.is_none() {
@@ -302,12 +293,10 @@ pub fn main() {
 
     unsafe { RoCell::init(&SHARED_CONTEXTS, shared_contexts) };
 
-    // These should only be initialised for full-system emulation
     if get_flags().prv != 0 {
         emu::init();
     }
 
-    // Load the program
     unsafe {
         emu::loader::load(
             &loader,
@@ -317,7 +306,6 @@ pub fn main() {
     };
     std::mem::drop(loader);
 
-    // Load firmware if present
     if get_flags().prv != 0 {
         if let Some(ref firmware) = CONFIG.firmware {
             let loader = emu::loader::Loader::new(firmware).unwrap_or_else(|err| {
@@ -328,7 +316,7 @@ pub fn main() {
                     )
                     .exit();
             });
-            // Load this past memory location
+
             let location = 0x40000000 + ((CONFIG.memory * 0x100000 + 0x1fffff) & !0x1fffff);
             unsafe {
                 if loader.is_elf() {
@@ -362,14 +350,12 @@ pub fn main() {
         };
 
         if !crate::threaded() {
-            // Run multiple fibers in the same group.
             fiber::FiberGroup::with(|group| {
                 for (idx, fiber) in fibers.iter_mut().enumerate() {
                     group.spawn(fiber, fn_of_idx(idx));
                 }
             });
         } else {
-            // Run one fiber per thread.
             let handles: Vec<_> = fibers
                 .into_iter()
                 .enumerate()
@@ -406,7 +392,6 @@ pub fn main() {
                     info!("switching to model={} threaded={}", id, FLAGS.thread);
                 }
 
-                // Remove translation cache and L0 I$ and D$
                 emu::interp::icache_reset();
                 for ctx in contexts.iter_mut() {
                     ctx.shared.clear_local_cache();
@@ -439,10 +424,26 @@ pub fn main() {
                             .expect("Unable to create memory trace file");
                         serde_json::to_writer(f, &tracer.memory_entries)
                             .expect("Unable to write memory trace to file");
+
+                        if !tracer.other_cols.is_empty() {
+                            let mut other_file = trace_file.clone();
+                            other_file.set_file_name("other_cols.json");
+                            println!(
+                                "[R2VM] Writing other witness columns ({} cols) to {}",
+                                tracer.other_cols.len(),
+                                other_file.display()
+                            );
+                            let f = std::fs::File::create(other_file)
+                                .expect("Unable to create other_cols file");
+                            serde_json::to_writer(f, &tracer.other_cols)
+                                .expect("Unable to write other_cols to file");
+                        }
                     }
                 }
                 print_stats(&mut contexts).unwrap();
-                std::process::exit(code);
+                unsafe {
+                    libc::_exit(code);
+                }
             }
             ExitReason::ClearStats => {
                 unsafe {
@@ -462,7 +463,6 @@ pub fn main() {
             }
         }
 
-        // Alert all contexts in case they having interrupts yet to process
         for i in 0..core_count() {
             shared_context(i).alert();
         }

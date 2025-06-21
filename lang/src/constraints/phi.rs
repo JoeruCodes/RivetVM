@@ -23,7 +23,12 @@ impl ResolveConstraint for Phi {
         phi_condition_map: &HashMap<(String, String), ConstraintSystemVariable>,
         switch_instructions: &Vec<StructuredAirConstraint>,
     ) {
-        let phi_res_air_var = AirTraceVariable(self.result.0);
+        let reg_col_opt = ctx.col_for_ssa(self.result);
+
+        let dest_col = ctx.new_aux_variable();
+        ctx.bind_ssa_var(self.result, dest_col.0);
+
+        let phi_res_air_var = AirTraceVariable(dest_col.0);
         let phi_res_expr_current = AirExpression::Trace(phi_res_air_var, RowOffset::Current);
 
         if self.incoming_values.len() == 2 {
@@ -58,8 +63,8 @@ impl ResolveConstraint for Phi {
 
                 let cond_expr =
                     AirExpression::Trace(AirTraceVariable(cond_var.0), RowOffset::Current);
-                let val_true_expr = lang_operand_to_air_expression(val_true_op);
-                let val_false_expr = lang_operand_to_air_expression(val_false_op);
+                let val_true_expr = ctx.expr_for_operand(val_true_op);
+                let val_false_expr = ctx.expr_for_operand(val_false_op);
 
                 let vt_minus_vf =
                     AirExpression::Sub(Box::new(val_true_expr), Box::new(val_false_expr.clone()));
@@ -82,7 +87,7 @@ impl ResolveConstraint for Phi {
                 for (val_op, pred_name) in &self.incoming_values {
                     if pred_name.as_str() == "entry" {
                         if let Operand::Const(_) = val_op {
-                            let init_val_expr = lang_operand_to_air_expression(*val_op);
+                            let init_val_expr = ctx.expr_for_operand(*val_op);
                             let init_constraint = AirExpression::Sub(
                                 Box::new(phi_res_expr_current.clone()),
                                 Box::new(init_val_expr),
@@ -136,15 +141,14 @@ impl ResolveConstraint for Phi {
                         switch_instr.condition_operand, switch_instr.default_target_block_name, switch_instr.cases
                     );
 
-                    let switch_cond_expr =
-                        lang_operand_to_air_expression(switch_instr.condition_operand);
+                    let switch_cond_expr = ctx.expr_for_operand(switch_instr.condition_operand);
 
                     let mut case_selector_exprs = Vec::new();
                     let mut sum_of_is_case_k_terms_for_default_check: Option<Box<AirExpression>> =
                         None;
 
                     for (case_val_lang_op, case_target_name) in &switch_instr.cases {
-                        let case_val_expr = lang_operand_to_air_expression(*case_val_lang_op);
+                        let case_val_expr = ctx.expr_for_operand(*case_val_lang_op);
 
                         let is_this_case_aux_var = ctx.new_aux_variable();
                         let is_this_case_expr =
@@ -168,7 +172,7 @@ impl ResolveConstraint for Phi {
                         ));
 
                         let phi_op_for_this_case = self.incoming_values.iter().find(|(_, pred_name)| pred_name.as_str() == case_target_name.as_str())
-                            .map(|(op, _)| lang_operand_to_air_expression(*op))
+                            .map(|(op, _)| ctx.expr_for_operand(*op))
                             .expect(&format!("PHI from Switch: Could not find PHI incoming value for case target {}", case_target_name));
 
                         case_selector_exprs.push((is_this_case_expr.clone(), phi_op_for_this_case));
@@ -205,7 +209,7 @@ impl ResolveConstraint for Phi {
                     ));
 
                     let phi_op_for_default = self.incoming_values.iter().find(|(_, pred_name)| pred_name.as_str() == switch_instr.default_target_block_name.as_str())
-                        .map(|(op, _)| lang_operand_to_air_expression(*op))
+                        .map(|(op, _)| ctx.expr_for_operand(*op))
                         .expect(&format!("PHI from Switch: Could not find PHI incoming value for default target {}", switch_instr.default_target_block_name));
 
                     let mut selected_value_sum: Option<Box<AirExpression>> = None;
@@ -254,6 +258,16 @@ impl ResolveConstraint for Phi {
                 "WARN: PHI: Node with 0 incoming values found for result {:?}. Skipping.",
                 self.result
             );
+        }
+
+        println!("    PHI processing complete.");
+
+        if let Some(reg_col) = reg_col_opt {
+            let sel = ctx.new_row_selector();
+            let dest_expr = AirExpression::Trace(AirTraceVariable(dest_col.0), RowOffset::Current);
+            let reg_expr = AirExpression::Trace(AirTraceVariable(reg_col), RowOffset::Current);
+            let diff = AirExpression::Sub(Box::new(dest_expr), Box::new(reg_expr));
+            ctx.add_row_gated_constraint(sel, diff);
         }
     }
 }

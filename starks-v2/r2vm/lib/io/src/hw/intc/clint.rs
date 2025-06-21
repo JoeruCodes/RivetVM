@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-/// Implemention of RISC-V core-local interrupt controller.
 pub struct Clint(Arc<Inner>);
 
 struct Inner {
@@ -15,10 +14,6 @@ struct Inner {
 }
 
 impl Clint {
-    /// Create a new `Clint` with MSIP and MTIP interrupt pins.
-    ///
-    /// # Panics
-    /// The function will panic if `msip_irqs` and `mtip_irqs` are not of the same length.
     pub fn new(
         ctx: Arc<dyn RuntimeContext>,
         msip_irqs: Vec<Box<dyn IrqPin>>,
@@ -38,7 +33,6 @@ impl Clint {
 
 impl IoMemory for Clint {
     fn read(&self, addr: usize, size: u32) -> u64 {
-        // Guard against access narrower than 32-bit
         if size < 4 {
             error!(target: "CLINT", "illegal register read 0x{:x}", addr);
             return 0;
@@ -63,18 +57,12 @@ impl IoMemory for Clint {
                 if size == 8 {
                     mtimecmp
                 } else {
-                    // Narrow read
                     if addr & 4 == 0 { mtimecmp } else { mtimecmp >> 32 }
                 }
             }
             0xBFF8 => {
                 let time = self.0.ctx.now().as_micros() as u64;
-                if size == 8 {
-                    time
-                } else {
-                    // Narrow read
-                    if addr & 4 == 0 { time } else { time >> 32 }
-                }
+                if size == 8 { time } else { if addr & 4 == 0 { time } else { time >> 32 } }
             }
             _ => {
                 error!(target: "CLINT", "illegal register read 0x{:x}", addr);
@@ -84,7 +72,6 @@ impl IoMemory for Clint {
     }
 
     fn write(&self, addr: usize, value: u64, size: u32) {
-        // Guard against access narrower than 32-bit
         if size < 4 {
             error!(target: "CLINT", "illegal register write 0x{:x} = 0x{:x}", addr, value);
             return;

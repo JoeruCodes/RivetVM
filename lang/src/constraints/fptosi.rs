@@ -21,9 +21,13 @@ impl ResolveConstraint for FpToSi {
         phi_condition_map: &HashMap<(String, String), ConstraintSystemVariable>,
         switch_instructions: &Vec<StructuredAirConstraint>,
     ) {
+        let reg_col_opt = ctx.col_for_ssa(self.result);
+        let dest_col = ctx.new_aux_variable();
+        ctx.bind_ssa_var(self.result, dest_col.0);
+
         println!(
-            "  FPTOSI: op={:?}, res={:?}, op_bw={}, res_bw={}",
-            self.operand, self.result, self.operand_bitwidth, self.result_bitwidth
+            "  FPTOSI: op={:?}, res={:?} (dest col {:?}), op_bw={}, res_bw={}",
+            self.operand, self.result, dest_col, self.operand_bitwidth, self.result_bitwidth
         );
 
         let (s_fp_bits, e_fp_bits, m_fp_bits) = match self.operand_bitwidth {
@@ -43,7 +47,7 @@ impl ResolveConstraint for FpToSi {
         let op_s_expr = AirExpression::Trace(op_s_var, RowOffset::Current);
         let op_e_expr = AirExpression::Trace(op_e_var, RowOffset::Current);
         let op_m_expr = AirExpression::Trace(op_m_var, RowOffset::Current);
-        let res_expr = AirExpression::Trace(AirTraceVariable(self.result.0), RowOffset::Current);
+        let res_expr = AirExpression::Trace(dest_col, RowOffset::Current);
 
         let is_nan = fp_is_nan(
             &op_e_expr,
@@ -187,6 +191,13 @@ impl ResolveConstraint for FpToSi {
             Box::new(final_res),
         ));
 
-        ctx.add_signed_range_proof_constraints(res_expr, self.result_bitwidth);
+        ctx.add_signed_range_proof_constraints(res_expr.clone(), self.result_bitwidth);
+
+        if let Some(reg_col) = reg_col_opt {
+            let sel = ctx.new_row_selector();
+            let reg_expr = AirExpression::Trace(AirTraceVariable(reg_col), RowOffset::Current);
+            let diff = AirExpression::Sub(Box::new(res_expr), Box::new(reg_expr));
+            ctx.add_row_gated_constraint(sel, diff);
+        }
     }
 }

@@ -8,7 +8,6 @@ mod assoc;
 pub use assoc::SetAssocTLB;
 
 pub(super) fn prv_of_ctx(ctx: &Context, exec: bool) -> u8 {
-    // Respect MPRV
     let mut prv = ctx.prv;
     if prv == 3 && ctx.mstatus & 0x20000 != 0 && !exec {
         prv = (ctx.mstatus >> 11) & 3;
@@ -20,7 +19,6 @@ pub(super) fn prv_of_ctx(ctx: &Context, exec: bool) -> u8 {
 pub(super) fn asid_of_ctx(ctx: &Context, exec: bool) -> Asid {
     let prv = prv_of_ctx(ctx, exec);
 
-    // MMU off
     if (ctx.satp >> 60) == 0 || prv == 3 {
         return Asid::Physical;
     }
@@ -35,11 +33,6 @@ pub(super) fn prv_asid_of_ctx(ctx: &Context, exec: bool) -> (u8, Asid) {
     (prv, asid)
 }
 
-/// A representation of all ASIDs.
-///
-/// For requests, TLB should only care about `Local`. For storage, it may need to use `Global`
-/// as well. For internal handling purposes, `Physical` is already treated as ASID that always
-/// do identity mapping.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Asid {
     Physical,
@@ -53,10 +46,6 @@ impl From<u16> for Asid {
     }
 }
 
-/// Basic performance statistics gathered from the TLB.
-///
-/// Note that total number of accesses is not included. It should rather be calculated from
-/// the previous level's miss count.
 pub struct Statistics {
     pub miss: AtomicU64,
     pub evict: AtomicU64,
@@ -75,50 +64,23 @@ impl Statistics {
     }
 }
 
-/// Basic performance model of a TLB.
 pub struct PerformanceModel {
-    /// `access_latency` indicates the latency of accessing this TLB. This is the latency
-    /// between access request to the TLB and the response from the TLB. This models the
-    /// latency of SRAM access and tag check. For L1 TLB, due to the design
-    /// of R2VM in which not all memory requests reach memory model, the access latency must be zero
-    /// and modelled within the pipeline model instead.
     pub access_latency: usize,
 
-    /// `miss_penalty_before` indicates the number of penalty cyclces if the entry to looked up
-    /// does not exist in the TLB. This models the latency of preparing the bus request to
-    /// next-level TLB or the page walker.
     pub miss_penalty_before: usize,
 
-    /// `miss_penalty_after` indicates the number of penalty cycles after the response is being
-    /// received from the next-level TLB or the page walker.
     pub miss_penalty_after: usize,
 }
 
-/// TLB model.
-///
-/// This model could be useful if you only care about hit rate, or only need roughly
-/// accurate simulation. If you are trying to simulate a specific system, it's suggested
-/// to supplement a custom implementation of [`MemoryModel`].
-///
-/// [`MemoryModel`]: super::MemoryModel
 pub trait TLB: Send + Sync {
-    /// Perform a TLB access at given virtual address.
-    ///
-    /// The leaf PTE is returned.
     fn access(&self, ctx: &mut Context, asid: Asid, addr: u64) -> PageWalkResult;
 
-    /// Get the next level TLB.
-    ///
-    /// If this is the last-level, it should refer to a page walker. For a page-walker, calling
-    /// this method may panic.
     fn parent(&self) -> &dyn TLB;
 
-    /// Flush this TLB. If any of the argument is `None` it means a wildcard match.
     fn flush_local(&self, asid: Option<Asid>, vaddr: Option<u64>) {
         let _ = (asid, vaddr);
     }
 
-    /// Flush this TLB. If the TLB is chained, do cascade flushing instead.
     fn flush(&self, asid: Option<Asid>, vaddr: Option<u64>) {
         self.flush_local(asid, vaddr);
         self.parent().flush(asid, vaddr);
@@ -260,7 +222,6 @@ impl super::MemoryModel for TLBModel {
     fn instruction_access(&self, ctx: &mut Context, addr: u64) -> Result<u64, ()> {
         let out = self.i_tlbs[ctx.hartid as usize].translate(ctx, addr, AccessType::Execute)?.0;
 
-        // TODO: ReplacementPolicy probably should be consulted first.
         ctx.insert_instruction_cache_line(addr, out);
         Ok(out)
     }
@@ -272,7 +233,6 @@ impl super::MemoryModel for TLBModel {
             if write { AccessType::Write } else { AccessType::Read },
         )?;
 
-        // TODO: ReplacementPolicy probably should be consulted first.
         ctx.insert_data_cache_line(addr, out, w);
         Ok(out)
     }

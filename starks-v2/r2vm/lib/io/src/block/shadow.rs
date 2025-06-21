@@ -3,16 +3,12 @@ use fnv::FnvHashMap;
 use std::io::Result;
 use std::sync::RwLock;
 
-/// A shadow block device that captures all write requests to the underlying block device.
-///
-/// All modified data will be kept in memory and not forwarded to the underlying block device.
 pub struct Shadow<T> {
     overlay: RwLock<FnvHashMap<u64, Box<[u8]>>>,
     block: T,
 }
 
 impl<T> Shadow<T> {
-    /// Construct a new `Shadow`.
     pub fn new(block: T) -> Self {
         Shadow { block, overlay: RwLock::new(FnvHashMap::default()) }
     }

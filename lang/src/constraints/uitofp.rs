@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use crate::utils::*;
 use crate::{
-    constraints::{lang_operand_to_air_expression, AirExpression, ResolveConstraint, RowOffset},
+    constraints::{
+        lang_operand_to_air_expression, AirExpression, AirTraceVariable, ResolveConstraint,
+        RowOffset,
+    },
     ConstraintSystemVariable, Operand, StructuredAirConstraint,
 };
 
@@ -23,12 +26,17 @@ impl ResolveConstraint for UiToFp {
         phi_condition_map: &HashMap<(String, String), ConstraintSystemVariable>,
         switch_instructions: &Vec<StructuredAirConstraint>,
     ) {
+        let reg_col_opt = ctx.col_for_ssa(self.result);
+
+        let dest_col = ctx.new_aux_variable();
+        ctx.bind_ssa_var(self.result, dest_col.0);
+
         println!(
-            "  UITOFP: op={:?}, res={:?}, op_bw={}, res_bw={}",
-            self.operand, self.result, self.operand_bitwidth, self.result_bitwidth
+            "  UITOFP: op={:?}, res={:?} (dest col {:?}), op_bw={}, res_bw={}",
+            self.operand, self.result, dest_col, self.operand_bitwidth, self.result_bitwidth
         );
 
-        let op_expr = lang_operand_to_air_expression(self.operand);
+        let op_expr = ctx.expr_for_operand(self.operand);
         ctx.add_unsigned_range_proof_constraints(op_expr.clone(), self.operand_bitwidth);
 
         let (s_fp_bits, e_fp_bits, m_fp_bits) = match self.result_bitwidth {
@@ -154,5 +162,13 @@ impl ResolveConstraint for UiToFp {
             Box::new(not_is_zero.clone()),
             Box::new(m_constraint),
         ));
+
+        if let Some(reg_col) = reg_col_opt {
+            let selector_expr = ctx.new_row_selector();
+            let res_expr = AirExpression::Trace(dest_col.clone(), RowOffset::Current);
+            let reg_expr = AirExpression::Trace(AirTraceVariable(reg_col), RowOffset::Current);
+            let diff = AirExpression::Sub(Box::new(res_expr), Box::new(reg_expr));
+            ctx.add_row_gated_constraint(selector_expr, diff);
+        }
     }
 }

@@ -18,7 +18,6 @@ struct VirtioNetHeader {
     num_buffers: u16,
 }
 
-/// A virtio network device.
 pub struct Network {
     status: u32,
     mac: [u8; 6],
@@ -33,7 +32,6 @@ struct Inner {
 }
 
 impl Network {
-    /// Create a new virtio network device with supplied device and MAC address.
     pub fn new(
         ctx: Arc<dyn RuntimeContext>,
         irq: Box<dyn IrqPin>,
@@ -46,18 +44,13 @@ impl Network {
 
     fn start_tx(&self, mut tx: Queue) {
         let inner = self.inner.clone();
-        // There's no stop mechanism, but we don't destroy devices anyway, so that's okay.
         self.ctx.spawn(Box::pin(async move {
             while let Ok(buffer) = tx.take().await {
                 let mut reader = buffer.reader();
-
                 let hdr_len = std::mem::size_of::<VirtioNetHeader>();
                 if reader.len() <= hdr_len {
-                    // Unexpected packet
                     error!(target: "VirtioNet", "illegal transmission with size {} smaller than header {}", reader.len(), hdr_len);
                 }
-
-                // We don't need any of the fields of the header, so just skip it.
                 let packet_len = reader.len() - hdr_len;
                 reader.seek(hdr_len).unwrap();
 
@@ -81,7 +74,6 @@ impl Network {
                 loop {
                     let len = inner.net.recv(&mut buffer).await.unwrap();
                     match rx.try_take().await {
-                        // Queue shutdown, terminate gracefully
                         Err(_) => return,
                         Ok(Some(mut dma_buffer)) => {
                             let mut writer = dma_buffer.writer();

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    constraints::{lang_operand_to_air_expression, AirExpression, ResolveConstraint, RowOffset},
+    constraints::{AirExpression, ResolveConstraint, RowOffset},
     ConstraintSystemVariable, Operand, StructuredAirConstraint,
 };
 #[derive(Debug, Clone)]
@@ -20,12 +20,25 @@ impl ResolveConstraint for Mul {
         phi_condition_map: &HashMap<(String, String), ConstraintSystemVariable>,
         switch_instructions: &Vec<StructuredAirConstraint>,
     ) {
-        let op1_expr = lang_operand_to_air_expression(self.operand1);
-        let op2_expr = lang_operand_to_air_expression(self.operand2);
-        let res_expr =
-            AirExpression::Trace(super::AirTraceVariable(self.result.0), RowOffset::Current);
+        let op1_expr = ctx.expr_for_operand(self.operand1);
+        let op2_expr = ctx.expr_for_operand(self.operand2);
+
+        let reg_col_opt = ctx.col_for_ssa(self.result);
+
+        let dest_col = ctx.new_aux_variable();
+        ctx.bind_ssa_var(self.result, dest_col.0);
+        let res_expr = AirExpression::Trace(dest_col, RowOffset::Current);
+
         let prod_expr = AirExpression::Mul(Box::new(op1_expr), Box::new(op2_expr));
-        let final_expr = AirExpression::Sub(Box::new(prod_expr), Box::new(res_expr));
+        let final_expr = AirExpression::Sub(Box::new(prod_expr), Box::new(res_expr.clone()));
         constraints.push(final_expr);
+
+        if let Some(reg_col) = reg_col_opt {
+            use crate::constraints::{AirExpression, AirTraceVariable};
+            let reg_expr = AirExpression::Trace(AirTraceVariable(reg_col), RowOffset::Current);
+            let selector_expr = ctx.new_row_selector();
+            let eq_expr = AirExpression::Sub(Box::new(res_expr), Box::new(reg_expr));
+            ctx.add_row_gated_constraint(selector_expr, eq_expr);
+        }
     }
 }

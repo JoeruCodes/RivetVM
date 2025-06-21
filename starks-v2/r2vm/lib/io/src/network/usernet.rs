@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-/// Network device simulated in userspace.
 pub struct Usernet {
     inner: usernet::Network,
 }
@@ -28,7 +27,6 @@ impl usernet::Context for EventLoopContext {
 }
 
 impl Usernet {
-    /// Create a new `Usernet` instance with the given runtime context.
     pub fn new(ctx: Arc<dyn RuntimeContext>) -> Self {
         let usernet_opt = usernet::Config {
             restricted: false,
@@ -43,7 +41,6 @@ impl Usernet {
         Self { inner: usernet }
     }
 
-    /// Forward a host port to a guest port.
     pub fn add_host_forward(
         &self,
         udp: bool,

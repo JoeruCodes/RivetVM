@@ -19,20 +19,8 @@ struct Mii;
 impl Mdio for Mii {
     fn read(&mut self, reg: u8) -> u16 {
         match reg {
-            0 => {
-                // 100Mbps Selected
-                // Auto-Negotiation Enabled
-                // Full Duplex
-                0b00110001_00000000
-            }
-            1 => {
-                // 100BASE-TX Full Duplex Enabled
-                // Auto-Negotiation Completed
-                // Auto-Negotiation Capable
-                // Link Up
-                // Extended Capabilities Available
-                0b01000000_00101101
-            }
+            0 => 0b00110001_00000000,
+            1 => 0b01000000_00101101,
             2 => 7,
             3 => 49393,
             _ => {
@@ -63,11 +51,10 @@ const ADDR_TX_CTRL_PONG: usize = 0xFFC;
 const ADDR_RX_CTRL_PING: usize = 0x17FC;
 const ADDR_RX_CTRL_PONG: usize = 0x1FFC;
 
-/// An implementation of Xilinx's AXI Ethernet Lite MAC
 pub struct XemacLite {
     inner: Arc<Inner>,
     rx_handle: AbortHandle,
-    // This sender is placed here so its dropping will cause tx task to stop.
+
     tx_sender: Mutex<Sender<bool>>,
 }
 
@@ -78,19 +65,17 @@ struct Inner {
     ctx: Arc<dyn RuntimeContext>,
 }
 
-/// Mutable states associated with the device
 struct State {
-    /// MDIO enable
     mdio_enable: bool,
-    /// MDIOADDR's OP field, 1 indicates read and 0 indicates write.
+
     mdio_op: bool,
-    /// MDIO's PHY device address
+
     mdio_phyaddr: u8,
-    /// MDIO's PHY register address
+
     mdio_regaddr: u8,
-    /// MDIOWR register
+
     mdio_wr: u16,
-    /// MDIORD register
+
     mdio_rd: u16,
     tx_len_ping: u16,
     tx_len_pong: u16,
@@ -152,7 +137,6 @@ impl XemacLite {
                 poll_fn(|cx| {
                     let mut state = inner.state.lock();
                     let buffer = if !pong {
-                        // Double check
                         if !state.tx_status_ping {
                             return Poll::Ready(Ok(()));
                         }
@@ -186,11 +170,10 @@ impl IoMemory for XemacLite {
     fn read(&self, addr: usize, size: u32) -> u64 {
         let state = self.inner.state.lock();
 
-        // For wider access, break it into 32-bit memory accesses if necessary
         if size == 8 && (addr & 0x7ff) < 0x7e0 {
             return LE::read_u64(&state.buffer[addr..]);
         }
-        // This I/O memory region supports 32-bit memory access only
+
         if size != 4 {
             error!(target: "xemaclite", "illegal register read 0x{:x}", addr);
             return 0;
@@ -203,12 +186,7 @@ impl IoMemory for XemacLite {
             }
             ADDR_MDIOWR => state.mdio_wr as u32,
             ADDR_MDIORD => state.mdio_rd as u32,
-            ADDR_MDIOCTRL => {
-                // Bit 3 is MDIO enable bit, bit 0 is the status bit.
-                // Because we simulate MDIO completion synchronously, the status bit will always
-                // be zero.
-                (state.mdio_enable as u32) << 3
-            }
+            ADDR_MDIOCTRL => (state.mdio_enable as u32) << 3,
             ADDR_TX_LEN_PING => state.tx_len_ping as u32,
             ADDR_GIE => (state.global_irq_enabled as u32) << 31,
             ADDR_TX_LEN_PONG => state.tx_len_pong as u32,
@@ -224,12 +202,11 @@ impl IoMemory for XemacLite {
         let mut state = self.inner.state.lock();
         let state = &mut *state;
 
-        // For wider access, break it into 32-bit memory accesses if necessary
         if size == 8 && (addr & 0x7ff) < 0x7e0 {
             LE::write_u64(&mut state.buffer[addr..], value);
             return;
         }
-        // This I/O memory region supports 32-bit memory access only
+
         if size != 4 {
             error!(target: "Xemaclite", "illegal register write 0x{:x} = 0x{:x}", addr, value);
             return;
@@ -248,7 +225,7 @@ impl IoMemory for XemacLite {
             ADDR_MDIORD => (),
             ADDR_MDIOCTRL => {
                 state.mdio_enable = value & (1 << 3) != 0;
-                // Kick MDIO transaction
+
                 if state.mdio_enable && (value & 1) != 0 {
                     if state.mdio_op {
                         state.mdio_rd = if state.mdio_phyaddr == 1 {
@@ -324,7 +301,6 @@ impl XemacLite {
                 async move {
                     let mut buffer = [0; 2048];
                     loop {
-                        // Receive into ping
                         let len = inner.net.recv(&mut buffer).await.unwrap();
                         {
                             let mut guard = inner.state.lock();
@@ -369,8 +345,6 @@ impl XemacLite {
         handle
     }
 
-    /// <div class="stability" style="margin-left: 16px; margin-top: -9px;"><div class="stab unstable"><span class="emoji">🔬</span> This is a unstable API.</div></div>
-    /// Build the device tree for this device.
     pub fn build_dt(base: usize, mac: [u8; 6]) -> fdt::Node {
         let mut node = fdt::Node::new(format!("ethernet@{:x}", base));
         node.add_prop("compatible", "xlnx,xps-ethernetlite-3.00.a");

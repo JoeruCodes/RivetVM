@@ -1,5 +1,3 @@
-//! This module defines the wire protocol of 9P, including routines for serialize to or deserialize
-//! from the wire binary format.
 use byteorder::{LE, ReadBytesExt, WriteBytesExt};
 use std::io::{Read, Result, Write};
 use std::time::{Duration, SystemTime};
@@ -111,7 +109,7 @@ pub enum Fcall {
     Rmknod {
         qid: Qid,
     },
-    // Rename is not supported as we support Renameat
+
     Treadlink {
         fid: u32,
     },
@@ -277,7 +275,7 @@ pub enum Fcall {
         fid: u32,
     },
     Rclunk {},
-    // Remove is not supported as we support Unlinkat
+
     Unknown {},
 }
 

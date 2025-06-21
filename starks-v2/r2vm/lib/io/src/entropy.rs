@@ -1,8 +1,3 @@
-//! Entropy devices.
-//!
-//! This module provides a [`Entropy`] trait which bridges entropy source implementation and
-//! I/O devices implementations.
-
 pub use rand;
 
 #[doc(no_inline)]

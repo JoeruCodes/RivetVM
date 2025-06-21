@@ -7,7 +7,6 @@ use std::os::unix::fs::FileExt;
 #[cfg(windows)]
 use std::os::windows::fs::FileExt;
 
-/// Block device backed by a file.
 pub struct File {
     file: std::fs::File,
     len: u64,
@@ -66,9 +65,6 @@ fn query_len(f: &mut std::fs::File) -> Result<u64> {
 }
 
 impl File {
-    /// Create a new `File` with [`std::fs::File`].
-    ///
-    /// [`Err`] is returned if essential metadata cannot be retrieved.
     pub fn new(mut file: std::fs::File) -> Result<Self> {
         let len = query_len(&mut file)?;
         Ok(File { file, len })

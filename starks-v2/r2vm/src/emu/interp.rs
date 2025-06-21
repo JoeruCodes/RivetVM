@@ -15,15 +15,13 @@ use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicU64};
 #[cfg(feature = "trace")]
 use crate::trace::MemoryAccessType;
 
-/// A cache line. `{CacheLine}` is composed of atomic variables because we sometimes need cross-
-/// thread invalidation. Note that usually paddr isn't touched, but by keeping tag and paddr
-/// together we can exploit better cache locality.
+#[cfg(feature = "trace")]
+use crate::ssa_hook;
+
 #[repr(C)]
 pub struct CacheLine {
-    /// Lowest bit is used to store whether this cache line is non-writable
-    /// It actually stores (tag << 1) | non-writable
     pub tag: AtomicU64,
-    /// It actually stores vaddr ^ paddr
+
     pub paddr: AtomicU64,
 }
 
@@ -43,62 +41,28 @@ impl CacheLine {
     }
 }
 
-/// Most fields of `{Context}` can only be safely accessed by the execution thread. However we do
-/// ocassionally need to communicate between these threads. This `{SharedContext}` are parts that
-/// can be safely accessed both from the execution thread and other harts.
 #[repr(C)]
 pub struct SharedContext {
-    /// This field stored incoming message alarms. This field will be periodically checked by the
-    /// running hart, and the running hart will enter slow path when any bit is set, therefore
-    /// receive and process these messages. Alarm message include:
-    /// * Whether there are interrupts not yet seen by the current hart. Interrupts
-    ///   can be masked by setting SIE register or SSTATUS.SIE, yet we couldn't atomically fetch
-    ///   these registers and determine if the hart should be interrupted if we are not the unique
-    ///   owner of `Context`. Our solution is to use message alarms. One bit is asserted when an
-    ///   external interrupt arrives. The message handler will check if it actually should take an
-    ///   interrupt, or the interrupt is indeed masked out. It will clear the bit regardless SIE,
-    ///   By doing so, it wouldn't need to check interrupts later.
-    /// * Shutdown notice.
     pub alarm: AtomicU64,
 
-    /// Interrupts currently pending. SIP is a very special register when doing simulation,
-    /// because it could be updated from outside a running hart.
-    /// * When an external interrupt asserts, it should be **OR**ed with corresponding bit.
-    /// * When an external interrupt deasserts, it should be **AND**ed with a mask.
     pub mip: AtomicU64,
 
-    /// This is the L0 cache used to accelerate simulation. If a memory request hits the cache line
-    /// here, then it will not go through virtual address translation nor cache simulation.
-    /// Therefore this should only contain entries that are neither in the TLB nor in the cache.
-    ///
-    /// The cache line should only contain valid entries for the current privilege level and ASID.
-    /// Upon privilege-level switch or address space switch all entries here should be cleared.
     pub line: [CacheLine; 1024],
     pub i_line: [CacheLine; 1024],
 
-    /// Floating point rounding mode. This will be used by softfp's get_rounding_mode callback.
-    /// As instructions can specify their own rounding mode, this is not the same as frm register.
     pub rm: AtomicU32,
-    /// Floating point exceptions.
+
     pub fflags: AtomicU32,
 
-    /// Mutex for supporting WFI in threaded execution mode. In threaded execution mode, when WFI
-    /// is executed we want to wait until an alarm is available. Ideally we protect alarm with a
-    /// mutex and then we can use Condvar and other OS thread primitives. However as `alarm` is
-    /// also used in assembly, we cannot put it in the Mutex. Therefore this mutex has content ()
-    /// and thus is only used when paired with the Condvar.
     pub wfi_mutex: fiber::Mutex<()>,
 
-    /// Condvar for supporting WFI. Used in pair with the mutex.
     pub wfi_condvar: fiber::Condvar,
 
-    /// Tasks that needs to be running on the hart-specific thread, such as manipulating I-Cache.
     pub tasks: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
 }
 
 impl SharedContext {
     pub fn new() -> Self {
-        // Check the constant used in helper.s
         assert_eq!(offset_of!(Context, pc), 0x100);
         assert_eq!(offset_of!(Context, instret), 0x108);
         assert_eq!(offset_of!(Context, cycle_offset), 0x128);
@@ -119,28 +83,22 @@ impl SharedContext {
         }
     }
 
-    /// Assert interrupt using the given mask.
     pub fn assert(&self, mask: u64) {
         if self.mip.fetch_or(mask, MemOrder::Relaxed) & mask != mask {
             self.alert();
         }
     }
 
-    /// Deassert interrupt using the given mask.
     pub fn deassert(&self, mask: u64) {
         self.mip.fetch_and(!mask, MemOrder::Relaxed);
     }
 
-    /// Trigger alarms. Will also wake up WFI.
     pub fn fire_alarm(&self, mask: u64) {
-        // Necessary to order with wait_alarm
         let _guard = self.wfi_mutex.lock();
         self.alarm.fetch_or(mask, MemOrder::Relaxed);
         self.wfi_condvar.notify_one();
     }
 
-    /// Inform the hart that there might be a pending interrupt, but without actually touching
-    /// `mip`. This should be called, e.g. if SIE or SSTATUS is modified.
     pub fn alert(&self) {
         self.fire_alarm(1);
     }
@@ -149,7 +107,6 @@ impl SharedContext {
         self.fire_alarm(2);
     }
 
-    /// Do a task on this hart's thread.
     pub fn run_on(&self, task: impl FnOnce() + Send + 'static) {
         self.tasks.lock().push(Box::new(task));
         self.alert();
@@ -233,15 +190,6 @@ impl SharedContext {
     }
 }
 
-/// Context representing the CPU state of a RISC-V hart.
-///
-/// # Memory Layout
-/// As this structure is going to be accessed directly by assembly, it is important that the fields
-/// are ordered well, so it can produce more optimal assembly code. We use the following order:
-/// * Firstly, most commonly accessed fields are placed at the front, for example, registers,
-///   counters, etc.
-/// * After that, we place a shared contexts.
-/// * All other items are placed at the back.
 #[repr(C)]
 pub struct Context {
     pub registers: [u64; 32],
@@ -251,23 +199,18 @@ pub struct Context {
     pub cause: u64,
     pub tval: u64,
 
-    // Performance counters
     pub minstret: u64,
-    /// We want each hart to own its own mcycle counter. This is to account WFI instructin where
-    /// cycles are effectively stopped, or when lock-step execution is not enforced.
+
     pub cycle_offset: i64,
 
     pub shared: SharedContext,
 
-    // Floating point states
     pub fp_registers: [u64; 32],
     pub frm: u32,
 
-    // For load reservation
     pub lr_addr: u64,
     pub lr_value: u64,
 
-    // S-mode CSRs
     pub scause: u64,
     pub stval: u64,
     pub stvec: u64,
@@ -276,7 +219,6 @@ pub struct Context {
     pub satp: u64,
     pub scounteren: u64,
 
-    // M-mode CSRs
     pub mideleg: u64,
     pub medeleg: u64,
     pub mcause: u64,
@@ -288,7 +230,6 @@ pub struct Context {
     pub mepc: u64,
     pub mcounteren: u64,
 
-    // Current privilege level
     pub prv: u64,
 
     pub hartid: u64,
@@ -324,7 +265,6 @@ impl Context {
         Ok(())
     }
 
-    /// Obtaining a bitmask of pending interrupts
     pub fn interrupt_pending(&mut self) -> u64 {
         let int_ready = self.shared.mip.load(MemOrder::Relaxed) & self.mie;
         (if self.prv != 3 || self.mstatus & 0x8 != 0 { int_ready & !self.mideleg } else { 0 })
@@ -335,12 +275,10 @@ impl Context {
             })
     }
 
-    /// Get the mcycle register of this hart.
     pub fn get_mcycle(&self) -> u64 {
         crate::event_loop().get_lockstep_cycles().wrapping_add(self.cycle_offset as u64)
     }
 
-    /// Re-check interrupt status, potentially wake up WFI
     pub fn recheck_interrupt(&mut self) {
         let int_ready = self.shared.mip.load(MemOrder::Relaxed) & self.mie;
         if int_ready != 0 {
@@ -352,28 +290,24 @@ impl Context {
         }
     }
 
-    /// Perform a WFI operation. Return after an alarm is fired.
     pub fn wait_alarm(&self) {
         let mut guard = self.shared.wfi_mutex.lock();
         if self.shared.alarm.load(MemOrder::Relaxed) != 0 {
             return;
         }
-        // In addition to alarm, we also need to check if any interrupt is pending.
-        // Pending interrupt would stop wfi even if it is disabled.
+
         if self.shared.mip.load(MemOrder::Relaxed) & self.mie != 0 {
             return;
         }
         self.shared.wfi_condvar.wait(&mut guard);
     }
 
-    /// Copy memory from the hart-specific virtual address.
     pub fn copy_from_virt_addr(&mut self, addr: u64, slice: &mut [u8]) -> Result<(), ()> {
         let mut virt_addr = addr;
         let mut phys_addr = 0;
         let mut virt_line = !addr;
         let cache_line_size_log2 = get_memory_model().cache_line_size_log2();
         for i in 0..slice.len() {
-            // Enter a new cache line
             if virt_addr >> cache_line_size_log2 != virt_line {
                 virt_line = virt_addr >> cache_line_size_log2;
                 phys_addr = translate_read(self, virt_addr)?;
@@ -385,14 +319,12 @@ impl Context {
         Ok(())
     }
 
-    /// Copy memory to the hart-specific virtual address.
     pub fn copy_to_virt_addr(&mut self, addr: u64, slice: &[u8]) -> Result<(), ()> {
         let mut virt_addr = addr;
         let mut phys_addr = 0;
         let mut virt_line = !addr;
         let cache_line_size_log2 = get_memory_model().cache_line_size_log2();
         for i in 0..slice.len() {
-            // Enter a new cache line
             if virt_addr >> cache_line_size_log2 != virt_line {
                 virt_line = virt_addr >> cache_line_size_log2;
                 phys_addr = translate_write(self, virt_addr)?;
@@ -404,16 +336,12 @@ impl Context {
         Ok(())
     }
 
-    /// Translate a virtual address into physical address. When exception happens `cause` and
-    /// `tval` are set and `Err` is returned.
     pub fn translate_vaddr(&mut self, addr: u64, access: AccessType) -> Result<u64, ()> {
-        // Respect MPRV
         let mut prv = self.prv;
         if prv == 3 && self.mstatus & 0x20000 != 0 && access != AccessType::Execute {
             prv = (self.mstatus >> 11) & 3;
         }
 
-        // MMU off
         if (self.satp >> 60) == 0 || prv == 3 {
             return Ok(addr);
         }
@@ -435,7 +363,6 @@ impl Context {
         }
     }
 
-    /// Insert a cache line into the L0 instruction cache.
     pub fn insert_instruction_cache_line(&mut self, vaddr: u64, paddr: u64) {
         assert!(paddr <= *super::MEM_BOUNDARY as u64);
         let idx = vaddr >> get_memory_model().cache_line_size_log2();
@@ -444,7 +371,6 @@ impl Context {
         line.paddr.store(paddr ^ vaddr, MemOrder::Relaxed);
     }
 
-    /// Insert a cache line into the L0 data cache.
     pub fn insert_data_cache_line(&mut self, vaddr: u64, paddr: u64, writable: bool) {
         assert!(paddr <= *super::MEM_BOUNDARY as u64);
         let idx = vaddr >> get_memory_model().cache_line_size_log2();
@@ -455,12 +381,6 @@ impl Context {
     }
 }
 
-/// Perform a CSR read on a context. Note that this operation performs no checks before accessing
-/// them.
-/// The caller should ensure:
-/// * The current privilege level has enough permission to access the CSR. CSR is nicely partition
-///   into regions, so privilege check can be easily done.
-/// * U-mode code does not access floating point CSRs with FS == Off.
 #[no_mangle]
 fn read_csr(ctx: &mut Context, csr: Csr) -> Result<u64, ()> {
     Ok(match csr {
@@ -484,18 +404,18 @@ fn read_csr(ctx: &mut Context, csr: Csr) -> Result<u64, ()> {
             ctx.test_counter(1)?;
             crate::event_loop().time()
         }
-        // We assume the instret is incremented already
+
         Csr::Instret => {
             ctx.test_counter(2)?;
             ctx.instret - 1
         }
         Csr::Sstatus => {
             let mut value = ctx.mstatus & 0xC6122;
-            // SSTATUS.FS = dirty, also set SD
+
             if value & 0x6000 == 0x6000 {
                 value |= 0x8000000000000000
             }
-            // Hard-wire UXL to 0b10, i.e. 64-bit.
+
             value |= 0x200000000;
             value
         }
@@ -512,11 +432,11 @@ fn read_csr(ctx: &mut Context, csr: Csr) -> Result<u64, ()> {
         Csr::Mhartid => ctx.hartid,
         Csr::Mstatus => {
             let mut value = ctx.mstatus;
-            // MSTATUS.FS = dirty, also set SD
+
             if value & 0x6000 == 0x6000 {
                 value |= 0x8000000000000000
             }
-            // Hard-wire UXL to 0b10, i.e. 64-bit.
+
             value |= 0x200000000;
             value
         }
@@ -543,8 +463,6 @@ fn read_csr(ctx: &mut Context, csr: Csr) -> Result<u64, ()> {
     })
 }
 
-/// This function does not check privilege level, so it must be checked ahead of time.
-/// This function also does not check for readonly CSRs, which is handled by decoder.
 #[no_mangle]
 fn write_csr(ctx: &mut Context, csr: Csr, value: u64) -> Result<(), ()> {
     match csr {
@@ -562,13 +480,12 @@ fn write_csr(ctx: &mut Context, csr: Csr, value: u64) -> Result<(), ()> {
             ctx.frm = (((value >> 5) & 0b111) as u32).min(4);
         }
         Csr::Sstatus => {
-            // Mask-out non-writable bits
             let old_value = ctx.mstatus;
             ctx.mstatus = old_value & !0xC6122 | value & 0xC6122;
             if ctx.interrupt_pending() != 0 {
                 ctx.shared.alert()
             }
-            // If MXR/SUM changed, need to flush local cache
+
             if old_value & 0xC0000 != ctx.mstatus & 0xC0000 {
                 ctx.shared.clear_local_cache();
                 ctx.shared.clear_local_icache();
@@ -579,7 +496,6 @@ fn write_csr(ctx: &mut Context, csr: Csr, value: u64) -> Result<(), ()> {
             ctx.recheck_interrupt();
         }
         Csr::Stvec => {
-            // We support MODE 0 only at the moment
             if (value & 2) == 0 {
                 ctx.stvec = value;
             }
@@ -591,7 +507,6 @@ fn write_csr(ctx: &mut Context, csr: Csr, value: u64) -> Result<(), ()> {
         Csr::Stval => ctx.stval = value,
         Csr::Sip => {
             if ctx.mideleg & 0x2 != 0 {
-                // Only SSIP flag can be cleared by software
                 if value & 0x2 != 0 {
                     ctx.shared.assert(2);
                 } else {
@@ -601,35 +516,29 @@ fn write_csr(ctx: &mut Context, csr: Csr, value: u64) -> Result<(), ()> {
         }
         Csr::Satp => {
             let new_satp = match value >> 60 {
-                // No paging
                 0 => 0,
-                // SV39
+
                 8 => value,
-                // We only support SV39 at the moment.
+
                 _ => ctx.satp,
             };
 
             get_memory_model().before_satp_change(ctx, new_satp);
 
-            // We only need to flush caches if SATP's mode or ASID changes.
-            // If only the PPN is changed, then according to the spec no change is required.
             if ctx.satp & !0xFFF_FFFFFFFF != value & !0xFFF_FFFFFFFF {
                 ctx.shared.clear_local_cache();
                 ctx.shared.clear_local_icache();
             }
 
-            // Perform the actual SATP update.
             ctx.satp = new_satp;
         }
         Csr::Mstatus => {
-            // Mask-out non-writable bits
             let old_value = ctx.mstatus;
             ctx.mstatus = old_value & !0x7E79AA | value & 0x7E79AA;
             if ctx.interrupt_pending() != 0 {
                 ctx.shared.alert();
             }
 
-            // If MPRV/MPP/MXR/SUM changed, need to flush local cache
             if old_value & 0xE1800 != ctx.mstatus & 0xE1800 {
                 ctx.shared.clear_local_cache();
                 ctx.shared.clear_local_icache();
@@ -648,7 +557,6 @@ fn write_csr(ctx: &mut Context, csr: Csr, value: u64) -> Result<(), ()> {
             ctx.recheck_interrupt();
         }
         Csr::Mtvec => {
-            // We support MODE 0 only at the moment
             if (value & 2) == 0 {
                 ctx.mtvec = value;
             }
@@ -689,7 +597,6 @@ pub fn icache_invalidate(start: usize, end: usize) {
 
     let mut prot = CODE_PROT.lock();
 
-    // Go through the CODE_PROT to see if we actually need invalidation
     let mut need_inv = false;
     for page in (start..end).step_by(4096) {
         if prot.remove(&(page >> 12)) {
@@ -700,10 +607,6 @@ pub fn icache_invalidate(start: usize, end: usize) {
     if need_inv {
         trace!(target: "CodeProt", "invalidate {:x} to {:x}", start, end);
         for i in 0..crate::core_count() {
-            // `run_on` will queue the closure for execution the next time interrupt is checked
-            // on the target hart. As SFENCE.VMA/FENCE.I will terminate a basic block and thus
-            // imply a cache check, this guarantees that the closure is definitely executed before
-            // before the software expects a coherence instruction cache.
             crate::shared_context(i).run_on(move || {
                 let mut icache = icache(i as u64);
                 let keys: Vec<u64> = icache.u_map.range(start..end).map(|(k, _)| *k).collect();
@@ -803,35 +706,9 @@ fn ptr_vaddr_x<T>(ctx: &mut Context, addr: u64) -> Result<&'static mut T, ()> {
     Ok(unsafe { &mut *(paddr as *mut T) })
 }
 
-/// DBT-ed instruction cache
-/// ========================
-///
-/// It is vital that we make keep instruction cache coherent with the main memory. Alternatively we
-/// can make use of the fence.i/sfence.vma instruction, but we would not like to flush the entire
-/// cache when we see them because flushing the cache is very expensive, and modifying code in
-/// icache is relatively rare.
-///
-/// It is very difficult to remove entries from the code cache, as there might be another hart
-/// actively executing the code. To avoid messing around this scenario, we does not allow individual
-/// cached blocks to be removed. Instead, we simply discard the pointer into the code cache so the
-/// invalidated block will no longer be used in the future.
-///
-/// To avoid infinite growth of the cache, we will flush the cache if the amount of DBT-ed code
-/// get large. This is achieved by partitioning the whole memory into two halves. Whenever we
-/// cross the boundary and start allocating on the other half, we flush all pointers into the
-/// code cache. The code currently executing will return after their current basic block is
-/// finished, so we don't have to worry about overwriting code that is currently executing (
-/// we cannot fill the entire half in a basic block's time). The allocating block will span two
-/// partitions, but we don't have to worry about this, as it uses the very end of one half, so
-/// next flush when crossing boundary again will invalidate it while not overwriting it.
-///
-/// Things may be a lot more complicated if we start to implement basic block chaining for extra
-/// speedup. In that case we probably need some pseudo-IPI stuff to make sure nobody is executing
-/// flushed or overwritten basic blocks.
 const HEAP_SIZE: usize = 1024 * 1024 * 32;
 
 struct ICache {
-    // The tuple stores (start, non-speculative start)
     u_map: BTreeMap<u64, (usize, usize)>,
     s_map: BTreeMap<u64, (usize, usize)>,
     m_map: BTreeMap<u64, (usize, usize)>,
@@ -850,7 +727,6 @@ impl ICache {
         }
     }
 
-    // Get the space left in I-Cache.
     fn space(&mut self) -> &mut [u8] {
         unsafe {
             std::slice::from_raw_parts_mut(
@@ -868,7 +744,6 @@ impl ICache {
         debug!("icache {:x} rollover", self.heap_start);
     }
 
-    // Commit space of some size
     fn commit(&mut self, size: usize) {
         self.heap_offset += size;
         assert!(self.heap_offset <= HEAP_SIZE);
@@ -905,25 +780,6 @@ static ICACHE: Lazy<Vec<Mutex<ICache>>> = Lazy::new(|| {
     vec
 });
 
-/// To prevent needing to flush the entire translation cache when SFENCE.VMA/FENCE.I is
-/// executed, we instead guarantee that the entries active in translation caches truthfully
-/// represent the contents in RAM. i.e. we guarantee that whenever there is a write, the
-/// relevant entries in code cache are invalidated.
-///
-/// This field is to provide this guarantee. There are a few requirements for the correct
-/// usage:
-/// (1) A writable entry should be inserted into D-Cache with CODE_PROT locked.
-/// (2) When inserting a I-Cache entry, CODE_PROT must be locked and updated while
-///     (a) invalidating D-Cache entries
-///     (b) before the I-Cache insertion happens.
-/// (3) I-Cache invalidation must be queued with CODE_PROT locked.
-///
-/// (1) and (2)(a) guarantee that when there is a new piece of code being translated, next memory
-/// access to that location will always hit the slow path, because CODE_PROT serialises them.
-/// (2)(b) and (3) guarantee that after a write can be serialised with a concurrent code
-/// translation. In such situation, as CODE_PROT is updated before actual translation, the
-/// queued invalidation callback will be executed after the translated code is inserted into
-/// the I-Cache.
 static CODE_PROT: Lazy<Mutex<BTreeSet<u64>>> = Lazy::new(|| Mutex::new(BTreeSet::default()));
 
 fn icache(hartid: u64) -> MutexGuard<'static, ICache> {
@@ -940,7 +796,6 @@ pub fn icache_reset() {
     }
 }
 
-/// Broadcast sfence
 fn global_sfence(ctx: &mut Context, mask: u64, asid: Option<u16>, vaddr: Option<u64>) {
     get_memory_model().before_sfence_vma(ctx, mask, asid, vaddr);
     for i in 0..crate::core_count() {
@@ -1045,9 +900,6 @@ fn sbi_call(ctx: &mut Context, nr: u64, arg0: u64, arg1: u64, arg2: u64, arg3: u
     }
 }
 
-// #region softfp callbacks
-//
-
 #[no_mangle]
 fn softfp_get_rounding_mode() -> softfp::RoundingMode {
     fiber::with_context(|data: &UnsafeCell<Context>| {
@@ -1064,12 +916,6 @@ fn softfp_set_exception_flags(flags: softfp::ExceptionFlags) {
     })
 }
 
-//
-// #endregion
-
-/// Perform a single step of instruction.
-/// This function assumes a post-incremented PC.
-/// This function does not check privilege level, so it must be checked ahead of time.
 fn step(ctx: &mut Context, op: &Op, compressed: bool) -> Result<(), ()> {
     #[cfg(feature = "trace")]
     if let Some(tracer) = &mut ctx.tracer {
@@ -1102,7 +948,12 @@ fn step(ctx: &mut Context, op: &Op, compressed: bool) -> Result<(), ()> {
                 unsafe { std::hint::unreachable_unchecked() }
             }
             if rd != 0 {
-                ctx.registers[rd] = value
+                ctx.registers[rd] = value;
+            }
+
+            #[cfg(feature = "trace")]
+            if let Some(tracer) = &mut ctx.tracer {
+                crate::ssa_hook::record(tracer, &format!("reg{}", rd), value as u128);
             }
         }};
     }
@@ -1114,7 +965,12 @@ fn step(ctx: &mut Context, op: &Op, compressed: bool) -> Result<(), ()> {
                 unsafe { std::hint::unreachable_unchecked() }
             }
             if rd != 0 {
-                ctx.registers[rd] = value as i32 as u64
+                ctx.registers[rd] = value as i32 as u64;
+
+                #[cfg(feature = "trace")]
+                if let Some(tracer) = &mut ctx.tracer {
+                    crate::ssa_hook::record(tracer, &format!("reg{}", rd), value as u128);
+                }
             }
         }};
     }
@@ -1181,6 +1037,13 @@ fn step(ctx: &mut Context, op: &Op, compressed: bool) -> Result<(), ()> {
             ctx.tval = $tval;
             return Err(());
         }};
+    }
+
+    if *crate::emu::LIBC_RETURN_PC != 0 && ctx.pc == *crate::emu::LIBC_RETURN_PC {
+        crate::shutdown(crate::ExitReason::Exit(0));
+        unsafe {
+            libc::_exit(0);
+        }
     }
 
     match *op {
@@ -1321,7 +1184,6 @@ fn step(ctx: &mut Context, op: &Op, compressed: bool) -> Result<(), ()> {
         /* AUIPC */
         Op::Auipc { rd, imm } => write_reg!(rd, pc_pre!().wrapping_add(imm as u64)),
         /* BRANCH */
-        // Same as auipc, PC-relative instructions are relative to the origin pc instead of the incremented one.
         Op::Beq { rs1, rs2, imm } => {
             if read_reg!(rs1) == read_reg!(rs2) {
                 ctx.pc = pc_pre!().wrapping_add(imm as u64);
@@ -1397,8 +1259,6 @@ fn step(ctx: &mut Context, op: &Op, compressed: bool) -> Result<(), ()> {
                 }
             }
             3 => {
-                // Note: We provide SBI interface to our M-mode, so the firmware can simple a few things down.
-                // This is non-standard.
                 ctx.registers[10] = sbi_call(
                     ctx,
                     ctx.registers[17],
@@ -1837,14 +1697,10 @@ fn step(ctx: &mut Context, op: &Op, compressed: bool) -> Result<(), ()> {
             let a = read_reg!(rs1) as i64;
             let b = read_reg!(rs2);
 
-            // First multiply as uint128_t. This will give compiler chance to optimize better.
             let exta = a as u64 as u128;
             let extb = b as u128;
             let mut r = ((exta * extb) >> 64) as u64;
 
-            // If rs1 < 0, then the high bits of a should be all one, but the actual bits in exta
-            // is all zero. Therefore we need to compensate this error by adding multiplying
-            // 0xFFFFFFFF and b, which is effective -b.
             if a < 0 {
                 r = r.wrapping_sub(b)
             }
@@ -2154,21 +2010,18 @@ fn step(ctx: &mut Context, op: &Op, compressed: bool) -> Result<(), ()> {
         Op::Mret => {
             ctx.pc = ctx.mepc;
 
-            // Set privilege according to MPP
             let new_prv = (ctx.mstatus & 0x1800) >> 11;
             assert_ne!(new_prv, 2);
             ctx.prv = new_prv;
             if new_prv != 3 {
-                // Switch from M-mode to S/U-mode, clear local cache
                 ctx.shared.clear_local_cache();
                 ctx.shared.clear_local_icache();
             }
 
-            // Set MIE according to MPIE
             ctx.mstatus = (ctx.mstatus & !0x8) | (ctx.mstatus & 0x80) >> 4;
-            // Set MPIE to 1
+
             ctx.mstatus |= 0x80;
-            // Set MPP to U
+
             ctx.mstatus &= !0x1800;
 
             if ctx.interrupt_pending() != 0 {
@@ -2178,26 +2031,23 @@ fn step(ctx: &mut Context, op: &Op, compressed: bool) -> Result<(), ()> {
         Op::Sret => {
             ctx.pc = ctx.sepc;
 
-            // Set privilege according to SPP
             if (ctx.mstatus & 0x100) != 0 {
                 ctx.prv = 1;
             } else {
                 ctx.prv = 0;
-                // Switch from S-mode to U-mode, clear local cache
+
                 ctx.shared.clear_local_cache();
                 ctx.shared.clear_local_icache();
             }
 
-            // Set SIE according to SPIE
             if (ctx.mstatus & 0x20) != 0 {
                 ctx.mstatus |= 0x2;
             } else {
                 ctx.mstatus &= !0x2;
             }
 
-            // Set SPIE to 1
             ctx.mstatus |= 0x20;
-            // Set SPP to U
+
             ctx.mstatus &= !0x100;
 
             if ctx.interrupt_pending() != 0 {
@@ -2207,7 +2057,7 @@ fn step(ctx: &mut Context, op: &Op, compressed: bool) -> Result<(), ()> {
         Op::Wfi => {
             let cycle_before = crate::event_loop().get_lockstep_cycles();
             ctx.wait_alarm();
-            // Make sure lockstep cycle count did not increase when sleeping in WFI
+
             let cycle_after = crate::event_loop().get_lockstep_cycles();
             ctx.cycle_offset -= (cycle_after - cycle_before) as i64;
         }
@@ -2223,8 +2073,7 @@ fn step(ctx: &mut Context, op: &Op, compressed: bool) -> Result<(), ()> {
 #[no_mangle]
 pub fn riscv_step(ctx: &mut Context, op: u64) -> Result<(), ()> {
     let op: Op = unsafe { std::mem::transmute(op) };
-    // The compressed bit is mainly used for PC offset calculation for PC-related operations,
-    // which we have taken care in DBT, so it won't matter.
+
     step(ctx, &op, false)
 }
 
@@ -2240,11 +2089,9 @@ fn translate_code(
         eprintln!("Decoding {:x}", phys_pc);
     }
 
-    // Reserve some space for the DBT compiler.
-    // This uses a very relax upper bound, enough for an entire page.
     let mut code = icache.space();
     let rollover = code.len() < 256 * 1024;
-    // Rollover if the space is not sufficient for next allocation.
+
     if rollover {
         icache.rollover();
         code = icache.space();
@@ -2254,12 +2101,9 @@ fn translate_code(
     compiler.begin(phys_pc);
 
     loop {
-        /// Decode a instruction at given location. If it will cross a page boundary, then Err is
-        /// returned.
         fn read_insn(pc: usize) -> Result<(Op, bool, u32), u16> {
             let bits = crate::emu::read_memory::<u16>(pc);
             if bits & 3 == 3 {
-                // The instruction will cross page boundary.
                 if pc & 4095 == 4094 {
                     return Err(bits);
                 }
@@ -2285,14 +2129,10 @@ fn translate_code(
         }
         phys_pc_end += if c { 2 } else { 4 };
 
-        // We must not emit code for protected ops
         if (prv as u8) < op.min_prv_level() {
             op = Op::Illegal
         }
 
-        // The way we generate code is a bit slow for branches. The mini-optimisation here
-        // captures conditional execution patterns.
-        // Note that this shouldn't be done if the fused macro-op can cross page boundary.
         if phys_pc_end & 4095 != 0 && compiler.model.as_ref().unwrap().can_fuse_cond_op() {
             match op {
                 Op::Beq { imm, .. }
@@ -2354,14 +2194,12 @@ fn translate_code(
             }
         }
 
-        // Need to stop when crossing page boundary
         if phys_pc_end & 4095 == 0 {
             compiler.end();
             break;
         }
     }
 
-    // We must not cross page boundary in absolutely any cases.
     assert_eq!(phys_pc & !4095, (phys_pc_end - 1) & !4095, "op crosses page boundary");
 
     let func_len = compiler.len;
@@ -2377,11 +2215,8 @@ fn translate_code(
     };
     map.insert(phys_pc, (code_fn, nonspec_fn));
 
-    // Actually commit the space we allocated
     icache.commit(func_len);
 
-    // We use 0 to indicate that a rollover has happened during the translation, and therefore
-    // no code should be patched, but the execution should resume from nonspec_fn instead.
     (if rollover { 0 } else { code_fn }, nonspec_fn)
 }
 
@@ -2423,8 +2258,7 @@ fn find_block(ctx: &mut Context) -> (usize, usize) {
 }
 
 #[no_mangle]
-/// Check if an enabled interrupt is pending, and take it if so.
-/// If `{Err}` is returned, the running fiber will exit.
+
 pub fn check_interrupt(ctx: &mut Context) -> Result<(), ()> {
     let alarm = ctx.shared.alarm.swap(0, MemOrder::Acquire);
 
@@ -2439,22 +2273,20 @@ pub fn check_interrupt(ctx: &mut Context) -> Result<(), ()> {
         }
     }
 
-    // Find out which interrupts can be taken
     let interrupt_mask = ctx.interrupt_pending();
-    // No interrupt pending
+
     if interrupt_mask == 0 {
         return Ok(());
     }
-    // Find the highest priority interrupt
+
     let pending = 63 - interrupt_mask.leading_zeros() as u64;
-    // Interrupts have the highest bit set
+
     ctx.cause = (1 << 63) | pending;
     ctx.tval = 0;
     trap(ctx);
     Ok(())
 }
 
-/// Trigger a trap. pc must be already adjusted properly before calling.
 #[no_mangle]
 pub fn trap(ctx: &mut Context) {
     if crate::get_flags().prv == 0 {
@@ -2480,27 +2312,23 @@ pub fn trap(ctx: &mut Context) {
         ctx.stval = ctx.tval;
         ctx.sepc = ctx.pc;
 
-        // Clear or set SPP bit
         if ctx.prv != 0 {
             ctx.mstatus |= 0x100;
         } else {
             ctx.mstatus &= !0x100;
-            // Switch from U-mode to S-mode, clear local cache
+
             ctx.shared.clear_local_cache();
             ctx.shared.clear_local_icache();
         }
 
-        // Clear of set SPIE bit
         if (ctx.mstatus & 0x2) != 0 {
             ctx.mstatus |= 0x20;
         } else {
             ctx.mstatus &= !0x20;
         }
 
-        // Clear SIE
         ctx.mstatus &= !0x2;
 
-        // Switch to S-mode
         ctx.prv = 1;
         ctx.pc = ctx.stvec;
     } else {
@@ -2510,24 +2338,20 @@ pub fn trap(ctx: &mut Context) {
         ctx.mtval = ctx.tval;
         ctx.mepc = ctx.pc;
 
-        // Set MPP bits
         ctx.mstatus = (ctx.mstatus & !0x1800) | (ctx.prv << 11);
         if ctx.prv != 3 {
             ctx.shared.clear_local_cache();
             ctx.shared.clear_local_icache();
         }
 
-        // Clear of set MPIE bit
         if (ctx.mstatus & 0x8) != 0 {
             ctx.mstatus |= 0x80;
         } else {
             ctx.mstatus &= !0x80;
         }
 
-        // Clear MIE
         ctx.mstatus &= !0x8;
 
-        // Switch to M-mode
         ctx.prv = 3;
         ctx.pc = ctx.mtvec;
     }
@@ -2535,10 +2359,8 @@ pub fn trap(ctx: &mut Context) {
     fiber::sleep(1)
 }
 
-/// Handle a misaligned load/store.
 #[no_mangle]
 pub fn handle_misalign(ctx: &mut Context, addr: u64) -> Result<(), ()> {
-    // Decode the misaligned instruction.
     let (op, compressed) = {
         let bits = unsafe { *(insn_translate(ctx, ctx.pc)? as *mut u16) };
         if bits & 3 == 3 {
@@ -2588,14 +2410,12 @@ pub fn handle_misalign(ctx: &mut Context, addr: u64) -> Result<(), ()> {
             ctx.copy_to_virt_addr(addr, &bytes)?;
         }
         _ => {
-            // Otherwise it's misaligned atomic
             ctx.cause = 6;
             ctx.tval = addr;
             return Err(());
         }
     }
 
-    // Advance PC past misaligned instruction.
     ctx.pc += if compressed { 2 } else { 4 };
     ctx.instret += 1;
     ctx.minstret += 1;

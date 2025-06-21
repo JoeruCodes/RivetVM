@@ -7,7 +7,6 @@ use ro_cell::RoCell;
 
 type PipelineFactory = fn(usize) -> Box<dyn pipeline::PipelineModel>;
 
-// As in register_memory_model will use Box::from_raw, we must use a ZST type to avoid freeing underlying memory.
 static MEMORY_MODEL: RoCell<&'static dyn MemoryModel> = RoCell::new(&memory::AtomicModel);
 static PIPELINE_MODEL: RoCell<PipelineFactory> = RoCell::new(|_| Box::new(pipeline::AtomicModel));
 
@@ -27,9 +26,6 @@ unsafe fn register_pipeline_model(model: PipelineFactory) -> PipelineFactory {
     RoCell::replace(&PIPELINE_MODEL, model)
 }
 
-/// Set whether lock-step execution is required for this model's simulation.
-/// For cycle-level simulation you would want this to be true, but if no cache coherency is
-/// simulated **and** only rough metrics are needed it's okay to set it to false.
 unsafe fn set_lockstep_mode(mode: bool) {
     RoCell::as_mut(&crate::FLAGS).thread = !mode;
 }

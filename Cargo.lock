@@ -476,6 +476,7 @@ dependencies = [
  "either",
  "inkwell",
  "llvm-sys",
+ "serde",
  "sha2",
 ]
 

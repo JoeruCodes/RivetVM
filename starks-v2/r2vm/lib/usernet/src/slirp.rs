@@ -16,7 +16,6 @@ extern "C" {
     fn g_free(ptr: *mut std::ffi::c_void);
 }
 
-/// Emulated network interface.
 pub struct Network {
     context: Arc<Mutex<Inner>>,
     dhcp_start: Ipv4Addr,
@@ -28,28 +27,20 @@ impl Drop for Network {
     }
 }
 
-/// The inner representation of the Network.
-/// This type must be pinned on heap because we cannot move SlirpCb.
-/// All operations on `Inner` need a `&mut self`, which guarantees that only one single
-/// thread can operate on slirp at a given time. Callbacks are allowed to retrieve `&mut self` from
-/// opaque pointers because they are called by slirp, and is known to be on the same thread.
 struct Inner {
     callbacks: SlirpCb,
     context: Box<dyn Context + Send>,
     slirp: *mut Slirp,
-    /// A pointer to Mutex<Inner> which allows reconstruction of `Arc<Mutex<Inner>>`
-    /// by only having `&mut Inner`.
+
     weak: Weak<Mutex<Inner>>,
-    /// Packets yet to be received,
+
     packet: VecDeque<Vec<u8>>,
-    /// Waker to call when a new packet arrives.
+
     waker: Vec<Waker>,
-    /// Indicate that the `Network` for this slirp is dropped, but by doing so it only signals to
-    /// poll stop, and we perform cleanup only until all Arc references to Inner are dropped.
+
     stop: bool,
 }
 
-/// Inner can be Send between threads, but is not Sync.
 unsafe impl Send for Inner {}
 
 impl Drop for Inner {
@@ -60,7 +51,6 @@ impl Drop for Inner {
     }
 }
 
-/// The timer instance to be used by slirp.
 struct Timer {
     inner: Weak<Mutex<Inner>>,
     cb: SlirpTimerCb,
@@ -76,7 +66,7 @@ pub trait Handler {}
 extern "C" fn send_packet(buf: *const c_void, len: usize, opaque: *mut c_void) -> isize {
     let inner = unsafe { &mut *(opaque as *mut Inner) };
     let slice = unsafe { slice::from_raw_parts(buf as *const u8, len) };
-    // Too many packets queued, discard
+
     if inner.packet.len() > 1024 {
         warn!(target: "slirp", "recv queue full, discarding packets");
         return -1;
@@ -119,28 +109,23 @@ extern "C" fn timer_mod(timer: *mut c_void, expire_time: i64, opaque: *mut c_voi
     let inner = unsafe { &mut *(opaque as *mut Inner) };
     let timer = unsafe { Arc::from_raw(timer as *mut Timer) };
 
-    // Calculate the deadline for scheduling a timer.
     let time = inner.context.now() + Duration::from_millis(expire_time.max(0) as u64);
 
-    // Replace the task
     let future = inner.context.create_timer(time);
     let timer_clone = Arc::downgrade(&timer);
     timer.task.lock().replace(Box::pin(async move {
         future.await;
         let timer = match timer_clone.upgrade() {
-            // Timer is dropped, abort
             None => return,
             Some(v) => v,
         };
         let inner = match timer.inner.upgrade() {
-            // Slirp is dropped, abort
             None => return,
             Some(v) => v,
         };
-        // We must execute callback while no other threads are performing slirp tasks.
-        // So lock the inner.
+
         let _guard = inner.lock();
-        // Execute callback
+
         if let Some(cb) = timer.cb {
             unsafe { cb(timer.cb_opaque) }
         }
@@ -221,7 +206,6 @@ impl Inner {
 }
 
 impl Network {
-    /// Create a new instance of [`Network`], with supplied configuration and context.
     pub fn new(config: &crate::Config, context: impl Context + Send + 'static) -> Self {
         Self::new_internal(config, Box::new(context))
     }
@@ -256,7 +240,6 @@ impl Network {
             Some(ref tftp) => (tftp.name.as_ref(), Some(tftp.root.clone()), tftp.bootfile.as_ref()),
         };
 
-        // Convert options to FFI types
         let cstr_vdns: Vec<_> =
             config.dns_suffixes.iter().map(|arg| CString::new(arg.as_bytes()).unwrap()).collect();
         let mut p_vdns: Vec<_> =
@@ -270,7 +253,6 @@ impl Network {
         let tftp_bootfile = tftp_bootfile.and_then(|s| CString::new(s.as_bytes()).ok());
         let vdomainname = config.domainname.as_ref().and_then(|s| CString::new(s.as_bytes()).ok());
 
-        // Create inner. `Arc<Mutex<Inner>>` is enough to pin Inner.
         let inner = Arc::new(Mutex::new(Inner {
             callbacks: SlirpCb {
                 send_packet: Some(send_packet),
@@ -292,8 +274,7 @@ impl Network {
         }));
 
         let mut lock = inner.lock();
-        // Assign weak pointer. This must be done before slirp_init as timer_create may be called
-        // when initing.
+
         lock.weak = Arc::downgrade(&inner);
         let callback = &lock.callbacks as *const _;
         let ptr = &*lock as *const Inner as *mut c_void;
@@ -325,7 +306,6 @@ impl Network {
         };
         inner.lock().slirp = context;
 
-        // Start the poll loop for this slirp
         let arc_clone = inner.clone();
         std::thread::Builder::new()
             .name("slirp".to_owned())
@@ -336,10 +316,6 @@ impl Network {
         Network { context: inner, dhcp_start: vdhcp_start }
     }
 
-    /// Send a packet to the interface.
-    ///
-    /// # Result
-    /// The number of bytes transmitted is returned.
     pub fn poll_send(
         &self,
         _cx: &mut std::task::Context,
@@ -351,11 +327,6 @@ impl Network {
         Poll::Ready(Ok(buf.len()))
     }
 
-    /// Receive a packet from the interface. If the buffer is not large enough, the packet gets
-    /// truncated.
-    ///
-    /// # Result
-    /// The number of bytes copied into the buffer is returned.
     pub fn poll_recv(
         &self,
         cx: &mut std::task::Context,
@@ -378,7 +349,6 @@ impl Network {
         }
     }
 
-    /// Forward a host port to a guest port.
     pub fn add_host_forward(
         &self,
         udp: bool,
@@ -404,13 +374,6 @@ impl Network {
         Ok(())
     }
 
-    /// Serialise the current state to a [`Write`] stream. The bytes written into `writer` are
-    /// intended only for [`load_state`](#method.load_state). This method is provided for
-    /// serialisation and migration, and the content should not be interpreted or modified
-    /// otherwise.
-    ///
-    /// # Result
-    /// Upon successful serialisation, the number of bytes written is returned.
     pub fn save_state(&self, writer: &mut dyn Write) -> std::io::Result<usize> {
         let version: i32 = unsafe { slirp_state_version() };
         writer.write_all(&version.to_be_bytes())?;
@@ -446,12 +409,6 @@ impl Network {
         res
     }
 
-    /// Deserialise the state from a [`Read`] stream. The data should be previously serialised
-    /// using [`save_state`](#method.save_state). It should saved from the same or an earlier,
-    /// semver-compatible version of this library.
-    ///
-    /// # Result
-    /// Upon successful deserialisation, the number of bytes read is returned.
     pub fn load_state(&self, reader: &mut dyn Read) -> std::io::Result<usize> {
         let mut version = [0; 4];
         reader.read_exact(&mut version)?;
@@ -497,7 +454,6 @@ impl Network {
     }
 }
 
-/// The main poll loop for an Inner.
 fn poll_loop(inner: Arc<Mutex<Inner>>) {
     let mut inner = inner.lock();
     loop {

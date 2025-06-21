@@ -14,25 +14,17 @@ fn default_cmdline() -> String {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
-    /// Number of cores.
     #[serde(default = "default_core")]
     pub core: usize,
 
-    /// Location of kernel.
-    /// It should be of ELF format, not containing any firmware.
     pub kernel: PathBuf,
 
-    /// Location of firmware.
-    /// It should be of ELF format. If firmware is present, R2VM will start with machine mode.
-    /// If firmware is not present, R2VM will start in supervisor mode and provide SBI interface.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firmware: Option<PathBuf>,
 
-    /// Memory size, in MiB.
     #[serde(default = "default_memory")]
     pub memory: usize,
 
-    /// Linux boot command line
     #[serde(default = "default_cmdline")]
     pub cmdline: String,
 
@@ -45,23 +37,18 @@ pub struct Config {
     #[serde(default)]
     pub console: Option<DeviceConfig<ConsoleConfig>>,
 
-    /// Whether a RTC device should be instantiated.
     #[serde(default)]
     pub rtc: Option<DeviceConfig<RTCConfig>>,
 
-    /// Block devices
     #[serde(default)]
     pub drive: Vec<DeviceConfig<DriveConfig>>,
 
-    /// Random devices
     #[serde(default)]
     pub random: Vec<DeviceConfig<RandomConfig>>,
 
-    /// 9p file sharing
     #[serde(default)]
     pub share: Vec<DeviceConfig<ShareConfig>>,
 
-    /// Network adapters
     #[serde(default)]
     pub network: Vec<DeviceConfig<NetworkConfig>>,
 }

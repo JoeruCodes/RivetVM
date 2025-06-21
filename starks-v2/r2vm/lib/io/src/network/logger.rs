@@ -4,16 +4,13 @@ use std::fs::File;
 use std::io::{Result, Write};
 use std::task::{Context, Poll};
 
-/// A logger network device that captures all traffics and write to a pcap dump.
 pub struct Logger<T> {
     file: File,
     network: T,
 }
 
 impl<T> Logger<T> {
-    /// Create a new logger that captures traffic to the given file in pcap dump format.
     pub fn new(mut file: File, network: T) -> Self {
-        // Write the header of pcap dump format.
         file.write_u32::<LE>(0xa1b2c3d4).unwrap();
         file.write_u16::<LE>(2).unwrap();
         file.write_u16::<LE>(4).unwrap();

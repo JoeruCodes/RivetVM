@@ -28,8 +28,11 @@ impl ResolveConstraint for Icmp {
         phi_condition_map: &HashMap<(String, String), ConstraintSystemVariable>,
         switch_instructions: &Vec<StructuredAirConstraint>,
     ) {
-        let res_air_var = AirTraceVariable(self.result.0);
-        let res_expr = AirExpression::Trace(res_air_var, RowOffset::Current);
+        let reg_col_opt = ctx.col_for_ssa(self.result);
+
+        let dest_col = ctx.new_aux_variable();
+        ctx.bind_ssa_var(self.result, dest_col.0);
+        let res_expr = AirExpression::Trace(dest_col, RowOffset::Current);
 
         let res_minus_one = AirExpression::Sub(
             Box::new(res_expr.clone()),
@@ -42,8 +45,8 @@ impl ResolveConstraint for Icmp {
 
         match self.cond {
             IntPredicate::EQ => {
-                let op1_air = lang_operand_to_air_expression(self.operand1);
-                let op2_air = lang_operand_to_air_expression(self.operand2);
+                let op1_air = ctx.expr_for_operand(self.operand1);
+                let op2_air = ctx.expr_for_operand(self.operand2);
                 let diff_expr = AirExpression::Sub(Box::new(op1_air), Box::new(op2_air));
                 constraints.push(AirExpression::Mul(
                     Box::new(diff_expr),
@@ -51,8 +54,8 @@ impl ResolveConstraint for Icmp {
                 ));
             }
             IntPredicate::NE => {
-                let op1_air = lang_operand_to_air_expression(self.operand1);
-                let op2_air = lang_operand_to_air_expression(self.operand2);
+                let op1_air = ctx.expr_for_operand(self.operand1);
+                let op2_air = ctx.expr_for_operand(self.operand2);
                 let one_minus_res = AirExpression::Sub(
                     Box::new(AirExpression::Constant(1)),
                     Box::new(res_expr.clone()),
@@ -64,8 +67,8 @@ impl ResolveConstraint for Icmp {
                 ));
             }
             IntPredicate::ULT | IntPredicate::UGT => {
-                let op1_air_orig = lang_operand_to_air_expression(self.operand1);
-                let op2_air_orig = lang_operand_to_air_expression(self.operand2);
+                let op1_air_orig = ctx.expr_for_operand(self.operand1);
+                let op2_air_orig = ctx.expr_for_operand(self.operand2);
 
                 let a_expr = if self.cond == IntPredicate::ULT {
                     op1_air_orig.clone()
@@ -147,8 +150,8 @@ impl ResolveConstraint for Icmp {
                 println!("  {:?}: Constraint (res=0 path) generated.", self.cond);
             }
             IntPredicate::ULE | IntPredicate::UGE => {
-                let op1_air_orig = lang_operand_to_air_expression(self.operand1);
-                let op2_air_orig = lang_operand_to_air_expression(self.operand2);
+                let op1_air_orig = ctx.expr_for_operand(self.operand1);
+                let op2_air_orig = ctx.expr_for_operand(self.operand2);
 
                 let is_ule = self.cond == IntPredicate::ULE;
                 let internal_predicate = if is_ule {
@@ -278,8 +281,8 @@ impl ResolveConstraint for Icmp {
                 );
             }
             IntPredicate::SLT => {
-                let op1_air_orig = lang_operand_to_air_expression(self.operand1);
-                let op2_air_orig = lang_operand_to_air_expression(self.operand2);
+                let op1_air_orig = ctx.expr_for_operand(self.operand1);
+                let op2_air_orig = ctx.expr_for_operand(self.operand2);
 
                 println!(
                     "ICMP SLT: op_bitwidth = {}, op1={:?}, op2={:?}, res={:?}",
@@ -550,8 +553,8 @@ impl ResolveConstraint for Icmp {
                 println!("  SLT: Final OR constraint for result added.");
             }
             IntPredicate::SGT => {
-                let op1_air_orig = lang_operand_to_air_expression(self.operand1);
-                let op2_air_orig = lang_operand_to_air_expression(self.operand2);
+                let op1_air_orig = ctx.expr_for_operand(self.operand1);
+                let op2_air_orig = ctx.expr_for_operand(self.operand2);
 
                 println!(
                     "ICMP SGT: op_bitwidth = {}, op1={:?}, op2={:?}, res={:?}",
@@ -612,8 +615,14 @@ impl ResolveConstraint for Icmp {
                     Box::new(slt_b_sum_from_bits),
                 ));
 
-                let slt_a_msb_expr = slt_a_bit_vars_exprs.last().unwrap().clone();
-                let slt_b_msb_expr = slt_b_bit_vars_exprs.last().unwrap().clone();
+                let slt_a_msb_expr = slt_a_bit_vars_exprs
+                    .last()
+                    .expect("slt_a_bit_vars_exprs should not be empty for SLT")
+                    .clone();
+                let slt_b_msb_expr = slt_b_bit_vars_exprs
+                    .last()
+                    .expect("slt_b_bit_vars_exprs should not be empty for SLT")
+                    .clone();
 
                 let ult_slt_ab_aux_res_var = ctx.new_aux_variable();
                 let ult_slt_ab_res_expr =
@@ -784,8 +793,8 @@ impl ResolveConstraint for Icmp {
                 );
             }
             IntPredicate::SGE => {
-                let op1_air_orig = lang_operand_to_air_expression(self.operand1);
-                let op2_air_orig = lang_operand_to_air_expression(self.operand2);
+                let op1_air_orig = ctx.expr_for_operand(self.operand1);
+                let op2_air_orig = ctx.expr_for_operand(self.operand2);
 
                 println!(
                     "ICMP SGE: op_bitwidth = {}, op1={:?}, op2={:?}, res={:?}",
@@ -1050,8 +1059,8 @@ impl ResolveConstraint for Icmp {
                             );
             }
             IntPredicate::SLE => {
-                let op1_air_orig = lang_operand_to_air_expression(self.operand1);
-                let op2_air_orig = lang_operand_to_air_expression(self.operand2);
+                let op1_air_orig = ctx.expr_for_operand(self.operand1);
+                let op2_air_orig = ctx.expr_for_operand(self.operand2);
 
                 println!(
                     "ICMP SLE: op_bitwidth = {}, op1={:?}, op2={:?}, res={:?}",
@@ -1319,6 +1328,13 @@ impl ResolveConstraint for Icmp {
                                 "  SLE: Logic for SGT(op1,op2) generated into aux var, SLE result is NOT of aux."
                             );
             }
+        }
+
+        if let Some(reg_col) = reg_col_opt {
+            let selector_expr = ctx.new_row_selector();
+            let reg_expr = AirExpression::Trace(AirTraceVariable(reg_col), RowOffset::Current);
+            let eq_expr = AirExpression::Sub(Box::new(res_expr.clone()), Box::new(reg_expr));
+            ctx.add_row_gated_constraint(selector_expr, eq_expr);
         }
     }
 }

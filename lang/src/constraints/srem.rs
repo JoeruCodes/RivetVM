@@ -23,9 +23,13 @@ impl ResolveConstraint for SRem {
         phi_condition_map: &std::collections::HashMap<(String, String), ConstraintSystemVariable>,
         switch_instructions: &Vec<crate::StructuredAirConstraint>,
     ) {
-        let a_expr = lang_operand_to_air_expression(self.operand1);
-        let b_expr = lang_operand_to_air_expression(self.operand2);
-        let r_expr = AirExpression::Trace(AirTraceVariable(self.result.0), RowOffset::Current);
+        let a_expr = ctx.expr_for_operand(self.operand1);
+        let b_expr = ctx.expr_for_operand(self.operand2);
+
+        let reg_col_opt = ctx.col_for_ssa(self.result);
+        let dest_col = ctx.new_aux_variable();
+        ctx.bind_ssa_var(self.result, dest_col.0);
+        let r_expr = AirExpression::Trace(dest_col, RowOffset::Current);
 
         let q_aux_var = ctx.new_aux_variable();
         let q_expr = AirExpression::Trace(q_aux_var, RowOffset::Current);
@@ -174,6 +178,13 @@ impl ResolveConstraint for SRem {
             println!("    SREM: Remainder magnitude constraints added.");
         } else {
             println!("    SREM: WARN - MSBs for r or b not available for magnitude constraint.");
+        }
+
+        if let Some(reg_col) = reg_col_opt {
+            let selector_expr = ctx.new_row_selector();
+            let reg_expr = AirExpression::Trace(AirTraceVariable(reg_col), RowOffset::Current);
+            let eq_expr = AirExpression::Sub(Box::new(r_expr.clone()), Box::new(reg_expr));
+            ctx.add_row_gated_constraint(selector_expr, eq_expr);
         }
     }
 }

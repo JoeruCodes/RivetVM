@@ -3,21 +3,18 @@ use crate::{IrqPin, RuntimeContext};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-/// A virtio entropy source device.
 pub struct Rng {
     status: u32,
     ctx: Arc<dyn RuntimeContext>,
     inner: Arc<Mutex<Inner>>,
 }
 
-/// struct used by task
 struct Inner {
     rng: Box<dyn crate::entropy::Entropy + Send>,
     irq: Box<dyn IrqPin>,
 }
 
 impl Rng {
-    /// Create a virtio entropy source device using a given random number generator.
     pub fn new(
         ctx: Arc<dyn RuntimeContext>,
         irq: Box<dyn IrqPin>,

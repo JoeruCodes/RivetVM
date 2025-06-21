@@ -33,7 +33,6 @@ impl TLB for SetAssocTLB {
 
         fiber::sleep(self.perf.access_latency);
 
-        // Access the TLB
         let mut set = self.sets[idx].lock();
         let (ptr, insert_ptr) = set.find(|entry| {
             if entry.vpn != vpn {
@@ -54,7 +53,6 @@ impl TLB for SetAssocTLB {
         let evict = set.remove(insert_ptr);
         drop(set);
 
-        // Handle entry eviction
         if let Some(evict) = evict {
             self.stats.evict.fetch_add(1, Ordering::Relaxed);
             if self.icache {
@@ -70,9 +68,7 @@ impl TLB for SetAssocTLB {
         let pte = self.parent.access(ctx, asid, addr).synthesise_4k(addr).pte;
         let mut set = self.sets[idx].lock();
 
-        // Only insert if the entry is valid
         if pte & PTE_V != 0 && pte & PTE_A != 0 {
-            // TODO: Consult ReplacementPolicy as sometimes doing this would require invalidation.
             set.insert(
                 insert_ptr,
                 Entry { vpn, pte, asid: if pte & PTE_G != 0 { Asid::Global } else { asid } },
@@ -94,7 +90,6 @@ impl TLB for SetAssocTLB {
                 for set in self.sets.iter() {
                     set.lock().retain(|entry| {
                         let result = match asid {
-                            // Wildcard removal
                             None => false,
                             Some(v) => v != entry.asid,
                         };
@@ -109,7 +104,6 @@ impl TLB for SetAssocTLB {
                 let idx = self.index(vpn);
                 self.sets[idx].lock().retain(|entry| {
                     match asid {
-                        // Wildcard removal
                         None => (),
                         Some(v) => {
                             if v != entry.asid {
@@ -130,7 +124,6 @@ impl TLB for SetAssocTLB {
 }
 
 impl SetAssocTLB {
-    /// Create a new set associative TLB.
     pub fn new(
         parent: Arc<dyn TLB>,
         stats: Arc<Statistics>,
@@ -153,7 +146,6 @@ impl SetAssocTLB {
         }
     }
 
-    /// Find out which set to use for a given address
     fn index(&self, vpn: u64) -> usize {
         (vpn & ((1 << self.idx_bits) - 1)) as usize
     }

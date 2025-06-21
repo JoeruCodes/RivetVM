@@ -2,11 +2,6 @@ use super::PipelineModel;
 use crate::emu::dbt::DbtCompiler;
 use riscv::Op;
 
-/// A simple in-order 5-stage pipeline model.
-/// It has a static branch predictor with backward branches predicted taken. A mispredicted branch takes 4 cycles.
-/// A load-use dependency would cause a 1-cycle stall.
-/// Multiplication and division are iterative and executed in MEM stage.
-/// Misaligned uncompressed instruction takes 1 extra cycle to load.
 pub struct InOrderModel {
     stall_reg: u8,
 }
@@ -50,10 +45,8 @@ impl PipelineModel for InOrderModel {
             | Op::Bltu { imm, .. }
             | Op::Bgeu { imm, .. } => {
                 if *imm >= 0 {
-                    // Correctly predicted non-taken branch
                     1
                 } else {
-                    // Predicted taken, but not taken
                     4
                 }
             }

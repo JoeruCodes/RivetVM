@@ -27,9 +27,14 @@ impl ResolveConstraint for Trunc {
             "  TRUNC: op={:?}, res={:?} ({}->{} bits)",
             self.operand, self.result, self.operand_bitwidth, self.result_bitwidth
         );
-        let op_expr = lang_operand_to_air_expression(self.operand);
-        let res_expr =
-            AirExpression::Trace(AirTraceVariable(self.result.0.clone()), RowOffset::Current);
+
+        let op_expr = ctx.expr_for_operand(self.operand);
+
+        let reg_col_opt = ctx.col_for_ssa(self.result);
+
+        let dest_col = ctx.new_aux_variable();
+        ctx.bind_ssa_var(self.result, dest_col.0);
+        let res_expr = AirExpression::Trace(dest_col, RowOffset::Current);
         let upper_bits_bitwidth = self.operand_bitwidth - self.result_bitwidth;
 
         let upper_bits_vars = (0..upper_bits_bitwidth)
@@ -64,5 +69,13 @@ impl ResolveConstraint for Trunc {
         let final_expr = AirExpression::Sub(Box::new(op_expr), Box::new(trunc_expr));
         constraints.push(final_expr);
         println!("      TRUNC: Main constraint added.");
+
+        if let Some(reg_col) = reg_col_opt {
+            let sel = ctx.new_row_selector();
+            let reg_expr = AirExpression::Trace(AirTraceVariable(reg_col), RowOffset::Current);
+            let res_again = AirExpression::Trace(dest_col.clone(), RowOffset::Current);
+            let diff = AirExpression::Sub(Box::new(res_again), Box::new(reg_expr));
+            ctx.add_row_gated_constraint(sel, diff);
+        }
     }
 }

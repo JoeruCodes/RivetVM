@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 const LOCKED_BIT: u8 = 0b01;
 const PARKED_BIT: u8 = 0b10;
 
-/// Raw mutex type.
 pub struct RawMutex {
     locked: AtomicU8,
 }
@@ -18,7 +17,6 @@ impl RawMutex {
         let mut spinwait = 0;
         let mut state = self.locked.load(Ordering::Relaxed);
         loop {
-            // Acquire the lock if not locked
             if state & LOCKED_BIT == 0 {
                 match self.locked.compare_exchange_weak(
                     state,
@@ -32,21 +30,16 @@ impl RawMutex {
                 continue;
             }
 
-            // Though the fiber mutex is primarily for fiber consumption, occasionally it might be
-            // invoked from non-fiber threads (e.g. interact with condition variable). We could
-            // either augment park/unpark to handle these, but for simplicity just let it spin.
             if !in_fiber {
                 std::hint::spin_loop();
                 state = self.locked.load(Ordering::Relaxed);
                 continue;
             }
 
-            // If no queue is there, wait a few times
             if state & PARKED_BIT == 0 && spinwait < 20 {
                 if spinwait < 10 {
                     std::hint::spin_loop();
                 } else {
-                    // We already know we're in fiber, call asm directly.
                     unsafe { super::raw::fiber_sleep(0) };
                 }
                 spinwait += 1;
@@ -54,7 +47,6 @@ impl RawMutex {
                 continue;
             }
 
-            // Set the parked bit
             if state & PARKED_BIT == 0 {
                 if let Err(x) = self.locked.compare_exchange_weak(
                     state,
@@ -67,13 +59,9 @@ impl RawMutex {
                 }
             }
 
-            // Park the fiber until woken up by unlock again
             park(
                 self as *const _ as usize,
-                || {
-                    // Another thread races to unlock
-                    self.locked.load(Ordering::Relaxed) == LOCKED_BIT | PARKED_BIT
-                },
+                || self.locked.load(Ordering::Relaxed) == LOCKED_BIT | PARKED_BIT,
                 || (),
             );
 
@@ -136,22 +124,10 @@ unsafe impl LRawMutex for RawMutex {
     }
 }
 
-/// A mutual exclusion primitive useful for protecting shared data with fiber support.
 pub type Mutex<T> = lock_api::Mutex<RawMutex, T>;
 
-/// An RAII implementation of a "scoped lock" of a mutex. When this structure is
-/// dropped (falls out of scope), the lock will be unlocked.
-///
-/// The data protected by the mutex can be accessed through this guard via its
-/// [`Deref`] and [`DerefMut`] implementations.
-///
-/// [`Deref`]: std::ops::Deref
-/// [`DerefMut`]: std::ops::DerefMut
 pub type MutexGuard<'a, T> = lock_api::MutexGuard<'a, RawMutex, T>;
 
-/// A Condition Variable
-///
-/// Condition variables represent the ability to block a fiber such that it consumes no CPU time while waiting for an event to occur. Condition variables are typically associated with a boolean predicate (a condition) and a mutex. The predicate is always verified inside of the mutex before determining that a fiber must block.
 pub struct Condvar {
     has_queue: AtomicBool,
 }
@@ -191,13 +167,11 @@ impl Condvar {
 }
 
 impl Condvar {
-    /// Creates a new condition variable.
     #[inline]
     pub const fn new() -> Self {
         Condvar { has_queue: AtomicBool::new(false) }
     }
 
-    /// Wakes up one blocked fiber on this condvar.
     #[inline]
     pub fn notify_one(&self) {
         if self.has_queue.load(Ordering::Relaxed) {
@@ -205,7 +179,6 @@ impl Condvar {
         }
     }
 
-    /// Wakes up all blocked fibers on this condvar.
     #[inline]
     pub fn notify_all(&self) {
         if self.has_queue.load(Ordering::Relaxed) {
@@ -213,9 +186,6 @@ impl Condvar {
         }
     }
 
-    /// Blocks the current fiber until this condition variable receives a notification.
-    ///
-    /// This function will atomically unlock the mutex guard and block the current fiber. Upon return, the lock will be re-acquired.
     #[inline]
     pub fn wait<T>(&self, guard: &mut MutexGuard<'_, T>) {
         self.wait_slow(unsafe { MutexGuard::mutex(&guard).raw() });

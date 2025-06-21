@@ -1,6 +1,6 @@
 use crate::utils::*;
 use crate::{
-    constraints::{AirExpression, ResolveConstraint, RowOffset},
+    constraints::{AirExpression, AirTraceVariable, ResolveConstraint, RowOffset},
     ConstraintSystemVariable, Operand,
 };
 
@@ -25,6 +25,12 @@ impl ResolveConstraint for FMul {
             "  FMUL: op1={:?}, op2={:?}, res={:?} (bitwidth {}) - Setting up S/E/M aux vars.",
             self.operand1, self.operand2, self.result, self.operand_bitwidth
         );
+
+        let reg_col_opt = ctx.col_for_ssa(self.result);
+
+        let dest_col = ctx.new_aux_variable();
+        ctx.bind_ssa_var(self.result, dest_col.0);
+        let res_expr = AirExpression::Trace(dest_col, RowOffset::Current);
 
         let (s_bit_count, exp_bit_count, mant_bit_count) = match self.operand_bitwidth {
             16 => (1u32, 5u32, 10u32),
@@ -732,5 +738,12 @@ impl ResolveConstraint for FMul {
             "gen_m_constr_mul_fmul",
         );
         constraints.push(gen_m_constraint);
+
+        if let Some(reg_col) = reg_col_opt {
+            let selector_expr = ctx.new_row_selector();
+            let reg_expr = AirExpression::Trace(AirTraceVariable(reg_col), RowOffset::Current);
+            let eq_expr = AirExpression::Sub(Box::new(res_expr.clone()), Box::new(reg_expr));
+            ctx.add_row_gated_constraint(selector_expr, eq_expr);
+        }
     }
 }

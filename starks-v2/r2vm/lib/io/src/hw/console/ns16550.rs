@@ -16,13 +16,10 @@ const ADDR_LSR: usize = 0x14;
 const ADDR_MSR: usize = 0x18;
 const ADDR_SCR: usize = 0x1C;
 
-/// An implementation of ns16550.
-///
-/// This is a behaviour model. Both the send and receive buffer are infinite.
 pub struct NS16550 {
     inner: Arc<Inner>,
     rx_handle: AbortHandle,
-    // This sender is placed here so its dropping will cause tx task to stop.
+
     tx_sender: Mutex<UnboundedSender<u8>>,
 }
 
@@ -40,9 +37,9 @@ struct State {
     mcr: u8,
     fcr: u8,
     scr: u8,
-    // Receive buffer trigger level
+
     trigger: usize,
-    // Current pending IRQ
+
     irq: Option<u8>,
     rx_buffer: VecDeque<u8>,
 }
@@ -54,7 +51,6 @@ impl Drop for NS16550 {
 }
 
 impl NS16550 {
-    /// Create a NS16550 device.
     pub fn new(
         ctx: Arc<dyn RuntimeContext>,
         irq: Box<dyn IrqPin>,
@@ -80,14 +76,13 @@ impl NS16550 {
     fn update_irq(inner: &Inner, state: &mut State) {
         fn compute_irq(state: &mut State) -> Option<u8> {
             if state.ier & 0b0001 != 0 && !state.rx_buffer.is_empty() {
-                // Threshold reached, report "Received Data Available"
                 if state.rx_buffer.len() >= state.trigger {
                     return Some(0b010);
                 }
-                // Otherwise report "Character Timeout"
+
                 return Some(0b110);
             }
-            // Always report "Transmitter Holding Register Empty"
+
             if state.ier & 0b0010 != 0 {
                 return Some(0b001);
             }
@@ -116,7 +111,6 @@ impl NS16550 {
                 async move {
                     let mut buffer = [0; 2048];
                     loop {
-                        // Receive into ping
                         let len = inner.console.read(&mut buffer).await.unwrap();
                         let mut state = inner.state.lock();
                         state.rx_buffer.extend(&buffer[..len]);
@@ -130,9 +124,6 @@ impl NS16550 {
         handle
     }
 
-    /// Build the device tree for this device.
-    ///
-    /// Node name will include the given base address, but `reg` and `interrupts` fields will not be filled.
     pub fn build_dt(base: usize) -> fdt::Node {
         let mut node = fdt::Node::new(format!("serial@{:x}", base));
         node.add_prop("clock-frequency", 40_000_000u32);
@@ -150,32 +141,26 @@ impl IoMemory for NS16550 {
         let val = match addr {
             ADDR_RBR_THR_DLL => {
                 if state.lcr & 0x80 == 0 {
-                    // RBR
                     let val = state.rx_buffer.pop_front().unwrap_or(0);
                     Self::update_irq(&self.inner, &mut state);
                     val
                 } else {
-                    // DLL
                     state.divisor as u8
                 }
             }
             ADDR_IER_DLM => {
                 if state.lcr & 0x80 == 0 {
-                    // IER
                     state.ier
                 } else {
-                    // DLM
                     (state.divisor >> 8) as u8
                 }
             }
             ADDR_IIR_FCR => {
                 if state.lcr & 0x80 == 0 {
-                    // IIR
                     let fifo_en = state.fcr & 0b1;
                     let irq_pending = if let Some(id) = state.irq { id << 1 } else { 1 };
                     fifo_en << 6 | irq_pending
                 } else {
-                    // FCR read
                     state.fcr
                 }
             }
@@ -200,30 +185,24 @@ impl IoMemory for NS16550 {
         match addr {
             ADDR_RBR_THR_DLL => {
                 if state.lcr & 0x80 == 0 {
-                    // THR
-                    // error!(target: "ns16550", "THR write");
                     self.tx_sender.lock().unbounded_send(value).unwrap();
                 } else {
-                    // DLL
                     state.divisor = (state.divisor & 0xff00) | value as u16;
                 }
             }
             ADDR_IER_DLM => {
                 if state.lcr & 0x80 == 0 {
-                    // IER
                     state.ier = value & 0b1111;
                 } else {
-                    // DLM
                     state.divisor = (state.divisor & 0x00ff) | (value as u16) << 8;
                 }
             }
             ADDR_IIR_FCR => {
                 state.fcr = value & 0b11001001;
                 if value & 0b10 != 0 {
-                    // Reset receiver FIFO
                     state.rx_buffer.clear();
                 }
-                // Set trigger level
+
                 state.trigger = match (value >> 6) & 0b11 {
                     0b00 => 1,
                     0b01 => 4,
@@ -238,11 +217,9 @@ impl IoMemory for NS16550 {
                 state.mcr = value & 0b11111;
             }
             ADDR_LSR => {
-                // Ignore LSR write
                 info!(target: "ns16550", "LSR write");
             }
             ADDR_MSR => {
-                // Ignore MSR write
                 info!(target: "ns16550", "MSR write");
             }
             ADDR_SCR => {

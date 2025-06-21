@@ -28,7 +28,6 @@ impl<T, R: ReplacementPolicy> CacheSet<T, R> {
         CacheSet { arr: vec.into_boxed_slice(), rp: R::new(size) }
     }
 
-    /// Search in the cache. Returns found entry and an insertion/overwrite pointer.
     pub fn find(&mut self, mut matcher: impl FnMut(&mut T) -> bool) -> (Option<&mut T>, usize) {
         for i in 0..self.arr.len() {
             if let Some(entry) = &mut self.arr[i] {
@@ -36,8 +35,6 @@ impl<T, R: ReplacementPolicy> CacheSet<T, R> {
                     continue;
                 }
 
-                // Due to lifetime rules, entry does not live long enough, so we have to
-                // re-borrow here.
                 return (self.arr[i].as_mut(), i);
             }
         }

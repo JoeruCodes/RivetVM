@@ -23,13 +23,8 @@ struct Inner {
     old_tty: libc::termios,
 }
 
-/// A [`Serial`] implementation that uses stdin/stdout TTY.
-///
-/// This device allow custom processing of the TTY input, to support escape keys, see `set_processor`.
 pub struct Console(Arc<Inner>);
 
-// Regardless the destructor of Console is executed or not, we always want the tty to be restored
-// when exiting. Therefore, use atexit to guard this.
 extern "C" fn console_exit() {
     if let Some(inner) = ACTIVE_CONSOLE.lock().as_ref() {
         unsafe { libc::tcsetattr(0, libc::TCSANOW, &inner.old_tty) };
@@ -38,32 +33,26 @@ extern "C" fn console_exit() {
 
 impl Drop for Console {
     fn drop(&mut self) {
-        // Remove ACTIVE_CONSOLE. Without this the inner struct won't actually be dropped.
         *ACTIVE_CONSOLE.lock() = None;
 
-        // Restore old TTY config
         unsafe { libc::tcsetattr(0, libc::TCSANOW, &self.0.old_tty) };
     }
 }
 
 impl Console {
-    /// Construct a `Console`. As `Console` takes control of the stdin/stdout TTY, only 1 `Console`
-    /// can be constructed at the same time. If there is already one alive, [`None`] is returned.
     pub fn new() -> Option<Self> {
-        // Lock here first to avoid reentrnace.
         let mut active_console = ACTIVE_CONSOLE.lock();
         if active_console.is_some() {
             return None;
         }
 
-        // Make tty as raw terminal, and save old config
         let old_tty = unsafe {
             let mut tty = std::mem::MaybeUninit::uninit();
             libc::tcgetattr(0, tty.as_mut_ptr());
             let mut tty = tty.assume_init();
             let old_tty = tty;
             libc::cfmakeraw(&mut tty);
-            // Still treat \n as \r\n, for convience of logging
+
             tty.c_oflag |= libc::OPOST;
             tty.c_cc[libc::VMIN] = 1;
             tty.c_cc[libc::VTIME] = 0;
@@ -82,28 +71,22 @@ impl Console {
             }),
         });
 
-        // Register the exit hook if not already done.
         AT_EXIT.call_once(|| unsafe {
             libc::atexit(console_exit);
         });
         *active_console = Some(inner.clone());
 
         let weak = Arc::downgrade(&inner);
-        // Construct early to ensure destructor will run even when thread creation fails.
+
         let ret = Console(inner);
 
-        // Spawn a thread to handle keyboard inputs.
-        // We spawn a new thread instead of using non-blocking and let guest OS to pull us so we can
-        // terminate the process using Ctrl+A X whenever we like.
         std::thread::Builder::new()
             .name("console".to_owned())
             .spawn(move || {
                 let mut buffer = [0; 64];
                 loop {
-                    // Just read a single character
                     let size = std::io::stdin().read(&mut buffer).unwrap();
                     if size == 0 {
-                        // EOF. Very unlikely. In this case we will just exit
                         return;
                     }
 
@@ -126,14 +109,11 @@ impl Console {
         Some(ret)
     }
 
-    /// Set the function that is to be used for processing TTY inputs. The value returned will be
-    /// read by the user of this device. If `None` is received, the input is discarded.
     pub fn set_processor(&mut self, processor: impl FnMut(u8) -> Option<u8> + Send + 'static) {
         self.0.state.lock().processor = Box::new(processor);
     }
 }
 
-/// Handle SIGWINCH for tty size change notification
 unsafe extern "C" fn handle_winch(
     _: libc::c_int,
     _: &mut libc::siginfo_t,

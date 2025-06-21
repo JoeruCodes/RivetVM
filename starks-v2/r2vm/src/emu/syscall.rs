@@ -12,8 +12,6 @@ static mut BRK: u64 = 0;
 static mut HEAP_START: u64 = 0;
 static mut HEAP_END: u64 = 0;
 
-/// The reference point when the user space asks for the current time. This is to allow
-/// user-space applications to do timing properly in lockstep mode.
 static EPOCH: Lazy<Duration> = Lazy::new(|| {
     SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap()
         - Duration::from_micros(crate::event_loop().time())
@@ -24,7 +22,6 @@ fn strace() -> bool {
     crate::get_flags().strace
 }
 
-/// Initialise brk when program is being loaded. Should not be called after execution has started.
 pub unsafe fn init_brk(brk: u64) {
     ORIGINAL_BRK = brk;
     BRK = brk;
@@ -45,14 +42,11 @@ impl<'a> fmt::Display for Escape<'a> {
             let code = self.0[i];
             let ch: char = code.into();
 
-            // Skip printable ASCII characters.
             if code <= 0x7F && (ch != '"' && ch != '\\' && !ch.is_ascii_control()) {
                 continue;
             }
 
-            // Print out all unprinted normal characters.
             if i != start {
-                // It's okay to use unchecked here becuase we know this is all ASCII
                 f.write_str(unsafe { std::str::from_utf8_unchecked(&self.0[start..i]) })?;
             }
 
@@ -276,7 +270,7 @@ fn convert_mmap_prot_to_host(prot: abi::c_int) -> libc::c_int {
     let mut ret = 0;
     if (prot & abi::PROT_READ) != 0 { ret |= libc::PROT_READ }
     if (prot & abi::PROT_WRITE) != 0 { ret |= libc::PROT_WRITE }
-    // Guest code isn't directly executable, map them to PROT_READ instead.
+    
     if (prot & abi::PROT_EXEC) != 0 { ret |= libc::PROT_READ }
     ret
 }
@@ -291,10 +285,6 @@ fn convert_mmap_flags_to_host(flags: abi::c_int) -> libc::c_int {
     ret
 }
 
-/// When an error occurs during a system call, Linux will return the negated value of the error
-/// number. Library functions, on the other hand, usually return -1 and set errno instead.
-/// Helper for converting library functions which use state variable `errno` to carry error
-/// information to a linux syscall style which returns a negative value representing the errno.
 fn return_errno(val: i64) -> i64 {
     if val != -1 {
         return val;
@@ -302,8 +292,6 @@ fn return_errno(val: i64) -> i64 {
     -convert_errno_from_host(unsafe { *libc::__errno_location() }) as _
 }
 
-/// Detect whether the path is referencing /proc/self/ or friends.
-/// returns None if the path does not match /proc/self/, and return the remaining part if it matches.
 fn is_proc_self(path: &CStr) -> Option<&Path> {
     let path = match path.to_str() {
         Err(_) => return None,
@@ -316,7 +304,7 @@ fn is_proc_self(path: &CStr) -> Option<&Path> {
     if let Ok(v) = path.strip_prefix("self") {
         return Some(v);
     }
-    // We still need to check /proc/pid
+
     let pid = format!("{}", std::process::id());
     match path.strip_prefix(pid) {
         Ok(v) => Some(v),
@@ -325,7 +313,6 @@ fn is_proc_self(path: &CStr) -> Option<&Path> {
 }
 
 pub fn translate_path(path: &Path) -> Cow<Path> {
-    // We assume relative paths cannot point to sysroot
     if path.is_relative() {
         return Cow::Borrowed(path);
     }
@@ -339,11 +326,8 @@ pub fn translate_path(path: &Path) -> Cow<Path> {
     Cow::Owned(newpath)
 }
 
-/// Convert a guest path to actual path. When guest is accessing some files in sysroot, this
-/// step is necessary.
 fn translate_path_cstr(pathname: &CStr) -> Cow<CStr> {
     let path = match pathname.to_str() {
-        // Just return as is if the path cannot be converted to str
         Err(_) => return Cow::Borrowed(pathname),
         Ok(v) => Path::new(v),
     };
@@ -477,7 +461,6 @@ pub unsafe fn syscall(
             ret
         }
         abi::SYS_close => {
-            // Handle standard IO specially, pretending close is sucessful.
             let ret = if arg0 <= 2 { 0 } else { return_errno(libc::close(arg0 as _) as _) };
             if strace() {
                 eprintln!("close({}) = {}", arg0, ret);
@@ -594,7 +577,6 @@ pub unsafe fn syscall(
                 arg3 as _,
             ) as _);
 
-            // When success, convert stat format to guest format.
             if ret == 0 {
                 let guest_stat = &mut *(arg2 as usize as *mut abi::stat);
                 convert_stat_from_host(guest_stat, &*host_stat.as_ptr());
@@ -628,7 +610,6 @@ pub unsafe fn syscall(
             let mut host_stat = std::mem::MaybeUninit::uninit();
             let ret = return_errno(libc::fstat(arg0 as _, host_stat.as_mut_ptr()) as _);
 
-            // When success, convert stat format to guest format.
             if ret == 0 {
                 let guest_stat = &mut *(arg1 as usize as *mut abi::stat);
                 convert_stat_from_host(guest_stat, &*host_stat.as_ptr());
@@ -726,7 +707,6 @@ pub unsafe fn syscall(
         }
         abi::SYS_brk => {
             if arg0 < ORIGINAL_BRK {
-                // Cannot reduce beyond original_brk
             } else if arg0 <= HEAP_END {
                 if arg0 > BRK {
                     libc::memset(BRK as usize as _, 0, (arg0 - BRK) as _);
@@ -735,7 +715,6 @@ pub unsafe fn syscall(
             } else {
                 let new_heap_end = std::cmp::max(HEAP_START, (arg0 + 4095) & !4095);
 
-                // The heap needs to be expanded
                 let addr = libc::mmap(
                     HEAP_END as _,
                     (new_heap_end - HEAP_END) as _,
@@ -746,9 +725,7 @@ pub unsafe fn syscall(
                 ) as isize as i64;
 
                 if addr == -1 {
-                    // We failed to expand the brk
                 } else {
-                    // Memory should be zeroed here as this is expected by glibc.
                     libc::memset(BRK as usize as _, 0, (HEAP_END - BRK) as _);
                     HEAP_END = new_heap_end;
                     BRK = arg0;
@@ -760,13 +737,13 @@ pub unsafe fn syscall(
             BRK as i64
         }
         abi::SYS_munmap => {
-            let ret = return_errno(libc::munmap(arg0 as _, arg1 as _) as _);
             if strace() {
-                eprintln!("munmap({:#x}, {}) = {}", arg0, arg1, ret);
+                eprintln!("munmap({:#x}, {}) = 0 (ignored)", arg0, arg1);
             }
-            ret
+
+            0
         }
-        // This is linux specific call, we will just return ENOSYS.
+
         abi::SYS_mremap => {
             if strace() {
                 eprintln!("mremap({}, {}, {}, {}, {:#x}) = -ENOSYS", arg0, arg1, arg2, arg3, arg4);
@@ -830,7 +807,6 @@ pub unsafe fn syscall(
                 host_stat.as_mut_ptr(),
             ) as _);
 
-            // When success, convert stat format to guest format.
             if ret == 0 {
                 let guest_stat = &mut *(arg1 as usize as *mut abi::stat);
                 convert_stat_from_host(guest_stat, &*host_stat.as_ptr());

@@ -1,13 +1,10 @@
 use lock_api::{RawMutex as LRawMutex, RawRwLock as LRawRwLock};
 use std::cell::Cell;
 
-/// Raw reader-writer lock type.
 pub struct RawRwLock {
-    // This is a rough implementation so it just works. We could refer to parking_lot's
-    // implementation to fit everything inside usize.
     read: super::RawMutex,
     write: super::RawMutex,
-    // Use a cell to reduce RwLock size.
+
     readers: Cell<usize>,
 }
 
@@ -79,15 +76,10 @@ unsafe impl LRawRwLock for RawRwLock {
     }
 }
 
-/// A mutual exclusion primitive useful for protecting shared data with fiber support.
 pub type RwLock<T> = lock_api::RwLock<RawRwLock, T>;
 
-/// RAII structure used to release the shared read access of a lock when
-/// dropped.
 pub type RwLockReadGuard<'a, T> = lock_api::RwLockReadGuard<'a, RawRwLock, T>;
 
-/// RAII structure used to release the exclusive write access of a lock when
-/// dropped.
 pub type RwLockWriteGuard<'a, T> = lock_api::RwLockWriteGuard<'a, RawRwLock, T>;
 
 #[test]
